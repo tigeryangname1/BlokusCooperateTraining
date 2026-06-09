@@ -2,10 +2,7 @@
 from blokus_env_four_color import BlokusFourColorEnv
 
 def main():
-    env = BlokusFourColorEnv(
-        min_obstacles=0,
-        max_obstacles=0,
-    )
+    env = BlokusFourColorEnv()
     obs, info = env.reset()
     env.render()
 

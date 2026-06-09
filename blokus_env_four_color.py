@@ -22,86 +22,66 @@ class BlokusFourColorEnv(gym.Env):
     def __init__(
         self,
         max_candidates: int = 512,
-        min_obstacles: int = 0,
-        max_obstacles: int = 0,
     ):
         super().__init__()
-
+        
         # 四個顏色都由同一個 agent 控制
         self.colors = [BLUE, YELLOW, RED, GREEN]
         self.current_color_index = 0  # 0=BLUE, 1=YELLOW, 2=RED, 3=GREEN
         self.max_candidates = max_candidates
 
-        # 隨機障礙設定
-        self.min_obstacles = 0
-        self.max_obstacles = 0
-        self.obstacle_value = 9
-        self.blocked_cells: set[tuple[int, int]] = set()
-
         # 棋子順序（四色共用同一組）
         self.piece_names = sorted(BASE_PIECES.keys())
         self.num_pieces = len(self.piece_names)
 
-        # === Observation Space ===
-        # board: (H,W) 0/1/2/3/4/5
-        #   0 = 空
-        #   1 = BLUE
-        #   2 = YELLOW
-        #   3 = RED
-        #   4 = GREEN
-        #   5 = 障礙
-        # remaining_*: (num_pieces,) 0/1
-        # turn: (1,) 0~3
+        # === 修正後的 Observation Space ===
+        # 直接把 action_mask 放進同一個 Dict 裡面，與原本的特徵並存
         self.observation_space = spaces.Dict(
             {
+                # 動作遮罩：1 代表合法，0 代表被遮罩（無效）
+                "action_mask": spaces.Box(
+                    low=0,
+                    high=1,
+                    shape=(self.max_candidates,),
+                    dtype=np.int8,
+                ),
+                # 棋盤狀態
                 "board": spaces.Box(
                     low=0,
                     high=5,
                     shape=(BOARD_SIZE, BOARD_SIZE),
                     dtype=np.int8,
                 ),
+                # 各色手牌剩餘狀態
                 "remaining_blue": spaces.Box(
-                    low=0,
-                    high=1,
-                    shape=(self.num_pieces,),
-                    dtype=np.int8,
+                    low=0, high=1, shape=(self.num_pieces,), dtype=np.int8
                 ),
                 "remaining_yellow": spaces.Box(
-                    low=0,
-                    high=1,
-                    shape=(self.num_pieces,),
-                    dtype=np.int8,
+                    low=0, high=1, shape=(self.num_pieces,), dtype=np.int8
                 ),
                 "remaining_red": spaces.Box(
-                    low=0,
-                    high=1,
-                    shape=(self.num_pieces,),
-                    dtype=np.int8,
+                    low=0, high=1, shape=(self.num_pieces,), dtype=np.int8
                 ),
                 "remaining_green": spaces.Box(
-                    low=0,
-                    high=1,
-                    shape=(self.num_pieces,),
-                    dtype=np.int8,
+                    low=0, high=1, shape=(self.num_pieces,), dtype=np.int8
                 ),
+                # 當前回合提示
                 "turn": spaces.Box(
-                    low=0,
-                    high=3,
-                    shape=(1,),
-                    dtype=np.int8,
+                    low=0, high=3, shape=(1,), dtype=np.int8
                 ),
             }
         )
 
         # === Action Space ===
-        # 和前面一樣：選擇候選合法步的 index
         self.action_space = spaces.Discrete(self.max_candidates)
 
         # 內部狀態
         self.state: GameState | None = None
         self._last_legal_moves: list[dict] = []
         self.current_steps = 0
-        self.max_steps = 600  # 安全上限，避免極端長局
+        self.max_steps = 600  # 安全上限
+
+        # 【注意】請刪除原本末尾那段錯誤的 self.observation_space 重新賦值程式碼
 
     # -----------------------
     # Gym API
@@ -111,14 +91,23 @@ class BlokusFourColorEnv(gym.Env):
         super().reset(seed=seed)
 
         self.state = GameState()
-        self._last_legal_moves = []
-        self.blocked_cells.clear()
+        self._last_legal_moves = [] 
         self.current_steps = 0
         self.current_color_index = 0  # 從 BLUE 開始
 
-        self._sample_blocked_cells()
+        # 確保第一個顏色有步可走（雖然開局第一步通常都有，但建議保持邏輯一致）
+        self._ensure_current_color_has_moves()
+        
+        # 取得當前（BLUE）的第一步所有合法動作
+        current_color = self.colors[self.current_color_index]
+        legal_moves = self.state.generate_legal_moves(current_color)
+        self._last_legal_moves = legal_moves  # 紀錄下來防呆或紀錄
+        
+        # 快取當前的對齊動作與遮罩
+        self.current_padded_moves, self.current_mask = self._get_padded_moves_and_mask(legal_moves)
+        
+        obs = self._get_obs(self.current_mask)
 
-        obs = self._get_obs()
         info = {}
         return obs, info
     def _compute_empty_board_cells(self) -> int:
@@ -129,10 +118,19 @@ class BlokusFourColorEnv(gym.Env):
                 if cell == 0:
                     empty += 1
         return empty
+    def action_masks(self) -> list[bool]:
+        # 核心改動：直接回傳快取住的 mask，絕對不會因為呼叫時間點不同而錯位！
+        return self.current_mask
+    
     def step(self, action: int):
         assert self.state is not None, "請先呼叫 reset()"
         self.current_steps += 1
+        
+        current_color = self.colors[self.current_color_index]
+        legal_moves = self.state.generate_legal_moves(current_color)
+
         if self.current_steps >= self.max_steps:
+            print(f"--- self.current_steps >= self.max_steps ---")
             left_total = self._compute_leftover_cells_total(self.state)
             left_each = self._compute_leftover_cells_each(self.state)
 
@@ -140,7 +138,11 @@ class BlokusFourColorEnv(gym.Env):
             base = self._final_reward(left_total, left_each)
             reward = base - 100.0 # 額外再罰 50，就表達「拖到timeout更糟」
 
-            obs = self._get_obs()
+            current_color = self.colors[self.current_color_index]
+            legal_moves = self.state.generate_legal_moves(current_color)
+            self.current_padded_moves, self.current_mask = self._get_padded_moves_and_mask(legal_moves)
+            obs = self._get_obs(self.current_mask)
+
             terminated = False
             truncated = True
             info = {
@@ -153,13 +155,15 @@ class BlokusFourColorEnv(gym.Env):
                 "empty_cells": self._compute_empty_board_cells(),
             }
             return obs, reward, terminated, truncated, info
-        # 1) 如果四色都沒步可走 -> 結束
+        # 如果四色都沒步可走 -> 結束
         if not self._any_legal_moves_for_any_color():
+            # print(f"--- not self._any_legal_moves_for_any_color() ---")
             left_total = self._compute_leftover_cells_total(self.state)
             left_each = self._compute_leftover_cells_each(self.state)
             final_reward = self._final_reward(left_total, left_each)
             empty_cells = self._compute_empty_board_cells()
-            obs = self._get_obs()
+            self.current_padded_moves, self.current_mask = self._get_padded_moves_and_mask(legal_moves)
+            obs = self._get_obs(self.current_mask)
             terminated = True
             truncated = False
             info = {
@@ -173,20 +177,20 @@ class BlokusFourColorEnv(gym.Env):
             }
             return obs, final_reward, terminated, truncated, info
 
-        # 2) 確保 current_color 有步可以走，如果沒有就跳到下一個有步的顏色
+        # 確保 current_color 有步可以走，如果沒有就跳到下一個有步的顏色
         self._ensure_current_color_has_moves()
-
-        current_color = self.colors[self.current_color_index]
-        legal_moves = self.state.generate_legal_moves(current_color)
+        
         self._last_legal_moves = legal_moves
 
         # 再次防呆：如果還是沒有（理論上代表四色都沒步了）
         if not legal_moves:
+            # print(f"--- not legal_moves ---")
             left_total = self._compute_leftover_cells_total(self.state)
             left_each = self._compute_leftover_cells_each(self.state)
             final_reward = self._final_reward(left_total, left_each)
             empty_cells = self._compute_empty_board_cells()
-            obs = self._get_obs()
+            self.current_padded_moves, self.current_mask = self._get_padded_moves_and_mask(legal_moves)
+            obs = self._get_obs(self.current_mask)
             terminated = True
             truncated = False
             info = {
@@ -199,23 +203,21 @@ class BlokusFourColorEnv(gym.Env):
                 "empty_cells": empty_cells,
             }
             return obs, final_reward, terminated, truncated, info
-
-        # 3) 把 legal_moves 壓到 max_candidates
-        candidate_moves = self._select_candidate_moves(legal_moves)
-        move = self._map_action_to_move(action, candidate_moves)
-
+        # print(f"action = {action}")
+        move = self.current_padded_moves[action]
+        # 理論上因為有 Action Mask，這裡的 move 絕對不會是 None。
+        # 如果是 None，代表環境或 Mask 套用邏輯有 Bug。
         if move is None:
-            # 選到無效動作：小懲罰，但不結束，也先不換色
-            obs = self._get_obs()
-            reward = -1.0
-            terminated = False
-            truncated = self.current_steps >= self.max_steps
-            info = {"invalid_action": True}
-            return obs, reward, terminated, truncated, info
-        # 在 apply_move 前
-        legal_before = len(self.state.generate_legal_moves(current_color))
-
-        # 4) 套用這一步
+            # 這裡建議加上列印資訊，能幫你瞬間看清是哪裡不對
+            print(f"--- 偵錯資訊 ---")
+            print(f"當前玩家顏色: {current_color}")
+            print(f"當前合法步數量: {len(legal_moves)}")
+            print(f"模型選擇的 Action ID: {action}")
+            print(f"該位置的遮罩狀態: {self.current_mask[action]}")
+            self.state.print_board()
+            raise RuntimeError(f"PPO選到了被遮罩的無效動作! Action ID: {action}")
+        
+        # 套用這一步
         new_state = self.state.apply_move(
             current_color,
             move["shape"],
@@ -224,21 +226,21 @@ class BlokusFourColorEnv(gym.Env):
             move["piece"],
         )
         self.state = new_state
-
-        step_reward = len(move["shape"]) * 1 # 四色共享 reward
+        step_reward = len(move["shape"]) / 5 * 0.05 # 四色共享 reward
         # 在 apply_move 後
-        legal_after = len(new_state.generate_legal_moves(current_color))
-        # shaping reward（關鍵）
-        step_reward += 0.1 * (legal_after - legal_before)
+
+        # print(f"len(move[shape]): {len(move["shape"])}")
+
         # 5) 檢查是否四色都沒步可走
         if not self._any_legal_moves_for_any_color():
+            print(f"--- not self._any_legal_moves_for_any_color() ---")
             left_total = self._compute_leftover_cells_total(self.state)
             left_each = self._compute_leftover_cells_each(self.state)
             final_reward = self._final_reward(left_total, left_each)
             total_reward = step_reward + final_reward
             empty_cells = self._compute_empty_board_cells()
-
-            obs = self._get_obs()
+            self.current_padded_moves, self.current_mask = self._get_padded_moves_and_mask(legal_moves)
+            obs = self._get_obs(self.current_mask)
             terminated = True
             truncated = False
             info = {
@@ -255,7 +257,15 @@ class BlokusFourColorEnv(gym.Env):
         # 6) 遊戲繼續：換到下一個顏色
         self._switch_color()
 
-        obs = self._get_obs()
+        # 7) 為「下一手」準備 Observation 與 Action Mask
+        next_color = self.colors[self.current_color_index]
+        next_legal_moves = self.state.generate_legal_moves(next_color)
+        # 計算下一手的 mask
+        self.current_padded_moves, self.current_mask = self._get_padded_moves_and_mask(next_legal_moves)
+        
+        # 構造回傳的 obs (必須包含下一手的 action_mask)
+        obs = self._get_obs(self.current_mask)
+        
         reward = step_reward
         terminated = False
         truncated = self.current_steps >= self.max_steps
@@ -266,7 +276,7 @@ class BlokusFourColorEnv(gym.Env):
     # Observation / Reward
     # -----------------------
 
-    def _get_obs(self):
+    def _get_obs(self, action_mask_list):
         """
         obs = {
             "board": (H,W) 0/1/2/3/4/5,
@@ -278,24 +288,23 @@ class BlokusFourColorEnv(gym.Env):
         }
         """
         assert self.state is not None
+        # 將 True/False 轉為 1/0 的 numpy array
+        mask_array = np.array(action_mask_list, dtype=np.int8)
 
         board_arr = np.zeros((BOARD_SIZE, BOARD_SIZE), dtype=np.int8)
         for y in range(BOARD_SIZE):
             for x in range(BOARD_SIZE):
-                if (x, y) in self.blocked_cells:
-                    board_arr[y, x] = 5  # 障礙
+                v = self.state.board[y][x]
+                if v == BLUE:
+                    board_arr[y, x] = 1
+                elif v == YELLOW:
+                    board_arr[y, x] = 2
+                elif v == RED:
+                    board_arr[y, x] = 3
+                elif v == GREEN:
+                    board_arr[y, x] = 4
                 else:
-                    v = self.state.board[y][x]
-                    if v == BLUE:
-                        board_arr[y, x] = 1
-                    elif v == YELLOW:
-                        board_arr[y, x] = 2
-                    elif v == RED:
-                        board_arr[y, x] = 3
-                    elif v == GREEN:
-                        board_arr[y, x] = 4
-                    else:
-                        board_arr[y, x] = 0
+                    board_arr[y, x] = 0
 
         remaining_blue = np.zeros((self.num_pieces,), dtype=np.int8)
         remaining_yellow = np.zeros((self.num_pieces,), dtype=np.int8)
@@ -328,6 +337,7 @@ class BlokusFourColorEnv(gym.Env):
             "remaining_red": remaining_red,
             "remaining_green": remaining_green,
             "turn": turn_flag,
+            "action_mask": mask_array,
         }
 
     def _compute_leftover_cells_total(self, state: GameState) -> int:
@@ -351,11 +361,59 @@ class BlokusFourColorEnv(gym.Env):
                 cnt += len(BASE_PIECES[name])
             res[color] = cnt
         return res
-
     def _final_reward(self, left_total: int, left_each: dict[int, int]) -> float:
+        """
+        left_total: 所有玩家剩餘的棋子方格總數 (以4人制標準 Blokus 為例，總方格數為 89 * 4 = 356)
+        left_each: 每個 color 剩餘的方格數，例如 {0: 10, 1: 12, 2: 8, 3: 15}
+        """
+        # 假設4人滿棋盤總方格數為 356 (21顆棋子共89格 * 4人)
+        # 請根據你的實際玩家數與棋子設定調整 MAX_POSSIBLE_LEFT
+        MAX_POSSIBLE_LEFT = 356.0 
+        
+        # ==========================================
+        # 1) 團隊總體表現 (Base Reward) - 平滑線性/曲線化
+        # ==========================================
+        # 棋子剩得越少，分數越高。完美清空為 +1.0，完全沒下一顆為 -1.0
+        progress_ratio = 1.0 - (left_total / MAX_POSSIBLE_LEFT) # 範圍 0.0 ~ 1.0
+        
+        # 使用線性映射到 [-1.0, 1.0] 區間
+        base_reward = -1.0 + 2.0 * progress_ratio
+        
+        # 如果你想給「完全清空 (0)」一個額外的完美加成 (Bonus)
+        if left_total == 0:
+            base_reward += 0.5  # 總分變成 1.5
+
+        # ==========================================
+        # 2) 團隊合作平衡懲罰 (Cooperative Penalty)
+        # ==========================================
+        # 目的：避免單一角色肥大、其他隊友被卡死的自私行為
+        scores = list(left_each.values())
+        
+        if len(scores) > 1:
+            # 計算各玩家剩餘棋子數的標準差
+            std_dev = np.std(scores)
+            
+            # 或者是計算最大與最小的差距 (Max-Min Difference)
+            # diff = max(scores) - min(scores)
+            
+            # 將懲罰項縮放到一個合理的範圍 (例如最大扣 0.3)
+            # 標準差越大（越不平均），扣分越多
+            # 假設極端不平均時標準差可能到 40~50，我們將其除以一個基數
+            balance_penalty = (std_dev / 20.0) * 0.3
+            balance_penalty = min(balance_penalty, 0.4) # 設個天花板
+        else:
+            balance_penalty = 0.0
+            
+        # ==========================================
+        # 3) 最終結算
+        # ==========================================
+        final_score = base_reward - balance_penalty
+        
+        return float(final_score)
+    def old_final_reward(self, left_total: int, left_each: dict[int, int]) -> float:
         # 1) 先算 base
         if left_total == 0:
-            base = 9999.0
+            base = 200.0
         elif left_total <= 20:
             base = 100.0
         elif left_total <= 40:
@@ -386,7 +444,31 @@ class BlokusFourColorEnv(gym.Env):
         if action < 0 or action >= len(candidate_moves):
             return None
         return candidate_moves[action]
-
+    
+    def _get_padded_moves_and_mask(self, legal_moves: list[dict]) -> tuple[list[dict | None], list[bool]]:  
+        """
+        將合法動作填入固定大小的 slots 中，並產生對應的 Action Mask。
+        確保同一個特徵的動作盡可能落在固定的語義位置。
+        """
+        # 1. 為了保持某種程度的語義一致性，我們使用全域固定的 key 排序（而非動態的盤面分數）
+        # 例如：依據方塊名稱字串、x座標、y座標排序。這樣相同的動作在不同回合會排在相對一致的位置。
+        fixed_sorted_moves = sorted(
+            legal_moves, 
+            key=lambda m: (m["piece"], m["x"], m["y"])
+        )
+        
+        candidate_moves = []
+        action_mask = []
+        
+        for i in range(self.max_candidates):
+            if i < len(fixed_sorted_moves):
+                candidate_moves.append(fixed_sorted_moves[i])
+                action_mask.append(True)  # 合法動作
+            else:
+                candidate_moves.append(None)
+                action_mask.append(False) # 遮罩掉的無效動作
+                
+        return candidate_moves, action_mask
     # -----------------------
     # 顏色輪轉 & 合法步檢查
     # -----------------------
@@ -422,44 +504,6 @@ class BlokusFourColorEnv(gym.Env):
         self.current_color_index = (self.current_color_index + 1) % len(self.colors)
 
     # -----------------------
-    # 隨機障礙
-    # -----------------------
-
-    def _sample_blocked_cells(self):
-        """
-        隨機生成障礙格，避免蓋到四色起始角
-        """
-        assert self.state is not None
-
-        forbidden = set()
-        for c in self.colors:
-            forbidden.update(self.state.start_corners[c])
-
-        all_cells = [
-            (x, y)
-            for y in range(BOARD_SIZE)
-            for x in range(BOARD_SIZE)
-            if (x, y) not in forbidden
-        ]
-
-        if not all_cells:
-            return
-
-        n_min = max(0, self.min_obstacles)
-        n_max = max(n_min, self.max_obstacles)
-        n_obstacles = int(self.np_random.integers(n_min, n_max + 1))
-
-        n_obstacles = min(n_obstacles, len(all_cells))
-        if n_obstacles <= 0:
-            return
-
-        idxs = self.np_random.choice(len(all_cells), size=n_obstacles, replace=False)
-        self.blocked_cells = {all_cells[i] for i in idxs}
-
-        for (x, y) in self.blocked_cells:
-            self.state.board[y][x] = self.obstacle_value
-
-    # -----------------------
     # Render（文字版）
     # -----------------------
     def _color_cell(self, ch: str) -> str:
@@ -486,20 +530,17 @@ class BlokusFourColorEnv(gym.Env):
         for y in range(BOARD_SIZE):
             row = ""
             for x in range(BOARD_SIZE):
-                if (x, y) in self.blocked_cells:
-                    ch = "#"
+                v = self.state.board[y][x]
+                if v == BLUE:
+                    ch = "B"
+                elif v == YELLOW:
+                    ch = "Y"
+                elif v == RED:
+                    ch = "R"
+                elif v == GREEN:
+                    ch = "G"
                 else:
-                    v = self.state.board[y][x]
-                    if v == BLUE:
-                        ch = "B"
-                    elif v == YELLOW:
-                        ch = "Y"
-                    elif v == RED:
-                        ch = "R"
-                    elif v == GREEN:
-                        ch = "G"
-                    else:
-                        ch = "."
+                    ch = "."
                 row += self._color_cell(ch)
             print(row)
         left_each = self._compute_leftover_cells_each(self.state)
