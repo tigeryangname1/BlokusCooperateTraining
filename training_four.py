@@ -13,7 +13,7 @@ def make_env():
 
 def main():
     # 假設你的電腦是 8 核心，開啟 4~6 個並行進程
-    num_cpu = 4 
+    num_cpu = 6 
     env = SubprocVecEnv([make_env() for _ in range(num_cpu)])
 
     # 定義更適合棋盤與複雜觀測空間的神經網路架構
@@ -25,7 +25,7 @@ def main():
     )
     '''
     model = MaskablePPO.load("ppo_blokus_four_color_soft", env=env)
-    model.learn(total_timesteps=1000_000, reset_num_timesteps=False)
+    model.learn(total_timesteps=200_000, reset_num_timesteps=False)
     '''
     # 1. 建立支援 Mask 的 PPO 模型
     model = MaskablePPO(
@@ -48,7 +48,7 @@ def main():
     # learning_rate=1e-4 調小學習率，走穩一點
 
     # 2. 開始訓練（MaskablePPO會自動去環境的 obs 裡找 "action_mask" 並套用）
-    model.learn(total_timesteps=1000000)
+    model.learn(total_timesteps=200000)
 
     #'''
     model.save("ppo_blokus_four_color_soft")

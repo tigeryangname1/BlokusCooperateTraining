@@ -284,7 +284,8 @@ class GameState:
     # ---- apply move ----
 
     def apply_move(self, color, shape_cells, origin_x, origin_y, piece_name):
-        new_state = deepcopy(self)
+        #new_state = deepcopy(self)
+        new_state = (self)
         for dx, dy in shape_cells:
             x, y = origin_x + dx, origin_y + dy
             new_state.board[y][x] = color

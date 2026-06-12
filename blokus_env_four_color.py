@@ -1,7 +1,8 @@
 import numpy as np
 import gymnasium as gym
-from gymnasium import spaces
+import math
 
+from gymnasium import spaces
 from blokus import GameState, BOARD_SIZE, BLUE, YELLOW, RED, GREEN, BASE_PIECES
 
 
@@ -125,7 +126,7 @@ class BlokusFourColorEnv(gym.Env):
     def step(self, action: int):
         assert self.state is not None, "請先呼叫 reset()"
         self.current_steps += 1
-        
+        self.state
         current_color = self.colors[self.current_color_index]
         legal_moves = self.state.generate_legal_moves(current_color)
 
@@ -217,6 +218,14 @@ class BlokusFourColorEnv(gym.Env):
             self.state.print_board()
             raise RuntimeError(f"PPO選到了被遮罩的無效動作! Action ID: {action}")
         
+         # 1. 【落子前】計算全團隊 4 個顏色的總可用角落數
+        # 假設顏色代號是 1, 2, 3, 4 (或是 0, 1, 2, 3，依你的設計調整)
+        all_colors = [1, 2, 3, 4]
+        before_corners_count = 0
+        for c in all_colors:
+            # 呼叫你本體現有的 get_color_corners，並計算集合的長度
+            before_corners_count += len(self.state.get_color_corners(c))
+        
         # 套用這一步
         new_state = self.state.apply_move(
             current_color,
@@ -225,15 +234,32 @@ class BlokusFourColorEnv(gym.Env):
             move["y"],
             move["piece"],
         )
-        self.state = new_state
-        step_reward = len(move["shape"]) / 5 * 0.05 # 四色共享 reward
         # 在 apply_move 後
+        
+        # 3. 【落子後】計算全團隊 4 個顏色的總可用角落數
+        after_corners_count = 0
+        for c in all_colors:
+            after_corners_count += len(new_state.get_color_corners(c))
 
-        # print(f"len(move[shape]): {len(move["shape"])}")
+        # 4. 【計算 Step Reward】
+        # 空間增減量 = 落子後總數 - 落子前總數
+        space_diff = after_corners_count - before_corners_count
+
+        self.state = new_state
+        # 方塊大小分數
+        reward_size = len(move["shape"]) / 5 * 0.02 # 四色共享 reward
+        # 角落增減分數
+        reward_space = space_diff * 0.05
+
+        # (C) 懲罰項：如果全隊角落總數降得太低（代表有人被徹底堵死）
+        # 假設開局大家角很多，如果總角數低於某個閾值，給予集體警告
+        reward_crisis = -0.5 if after_corners_count < 8 else 0.0
+
+        step_reward = reward_size + reward_space + reward_crisis
 
         # 5) 檢查是否四色都沒步可走
         if not self._any_legal_moves_for_any_color():
-            print(f"--- not self._any_legal_moves_for_any_color() ---")
+            # print(f"--- not self._any_legal_moves_for_any_color() ---")
             left_total = self._compute_leftover_cells_total(self.state)
             left_each = self._compute_leftover_cells_each(self.state)
             final_reward = self._final_reward(left_total, left_each)
@@ -366,22 +392,15 @@ class BlokusFourColorEnv(gym.Env):
         left_total: 所有玩家剩餘的棋子方格總數 (以4人制標準 Blokus 為例，總方格數為 89 * 4 = 356)
         left_each: 每個 color 剩餘的方格數，例如 {0: 10, 1: 12, 2: 8, 3: 15}
         """
-        # 假設4人滿棋盤總方格數為 356 (21顆棋子共89格 * 4人)
-        # 請根據你的實際玩家數與棋子設定調整 MAX_POSSIBLE_LEFT
-        MAX_POSSIBLE_LEFT = 356.0 
-        
-        # ==========================================
-        # 1) 團隊總體表現 (Base Reward) - 平滑線性/曲線化
-        # ==========================================
-        # 棋子剩得越少，分數越高。完美清空為 +1.0，完全沒下一顆為 -1.0
-        progress_ratio = 1.0 - (left_total / MAX_POSSIBLE_LEFT) # 範圍 0.0 ~ 1.0
-        
-        # 使用線性映射到 [-1.0, 1.0] 區間
-        base_reward = -1.0 + 2.0 * progress_ratio
-        
+
+        # 標準指數衰減
+        # k 值決定了曲線的彎曲程度。k=0.04 可以讓 100 左右完美收尾在 -2
+        k = 0.04 
+        base_reward = -4.0 * (1.0 - math.exp(-k * left_total))
+
         # 如果你想給「完全清空 (0)」一個額外的完美加成 (Bonus)
         if left_total == 0:
-            base_reward += 0.5  # 總分變成 1.5
+            base_reward += 0.5  # 總分變成 0.5
 
         # ==========================================
         # 2) 團隊合作平衡懲罰 (Cooperative Penalty)
