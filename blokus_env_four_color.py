@@ -168,7 +168,7 @@ class BlokusFourColorEnv(gym.Env):
             terminated = True
             truncated = False
             info = {
-                "reason": "no_legal_moves_all",
+                "reason": "no_legal_moves_all_1",
                 "left_total": left_total,
                 "left_blue": left_each[BLUE],
                 "left_yellow": left_each[YELLOW],
@@ -183,19 +183,21 @@ class BlokusFourColorEnv(gym.Env):
         
         self._last_legal_moves = legal_moves
 
-        # 再次防呆：如果還是沒有（理論上代表四色都沒步了）
+        # 若該色沒不可以走就跳到下一個step
         if not legal_moves:
             # print(f"--- not legal_moves ---")
             left_total = self._compute_leftover_cells_total(self.state)
             left_each = self._compute_leftover_cells_each(self.state)
-            final_reward = self._final_reward(left_total, left_each)
+            final_reward = 0
             empty_cells = self._compute_empty_board_cells()
+            current_color = self.colors[self.current_color_index]
+            legal_moves = self.state.generate_legal_moves(current_color)
             self.current_padded_moves, self.current_mask = self._get_padded_moves_and_mask(legal_moves)
             obs = self._get_obs(self.current_mask)
-            terminated = True
+            terminated = False #繼續跑
             truncated = False
             info = {
-                "reason": "no_legal_moves_all",
+                "reason": "no_legal_moves_2",
                 "left_total": left_total,
                 "left_blue": left_each[BLUE],
                 "left_yellow": left_each[YELLOW],
@@ -247,16 +249,16 @@ class BlokusFourColorEnv(gym.Env):
 
         self.state = new_state
         # 方塊大小分數
-        reward_size = len(move["shape"]) / 5 * 0.02 # 四色共享 reward
+        reward_size = len(move["shape"]) / 5 * 0.01 # 四色共享 reward
         # 角落增減分數
-        reward_space = space_diff * 0.05
+        reward_space = space_diff * 0.02
 
         # (C) 懲罰項：如果全隊角落總數降得太低（代表有人被徹底堵死）
         # 假設開局大家角很多，如果總角數低於某個閾值，給予集體警告
         reward_crisis = -0.5 if after_corners_count < 8 else 0.0
 
         step_reward = reward_size + reward_space + reward_crisis
-
+        step_reward = 0
         # 5) 檢查是否四色都沒步可走
         if not self._any_legal_moves_for_any_color():
             # print(f"--- not self._any_legal_moves_for_any_color() ---")
@@ -270,7 +272,7 @@ class BlokusFourColorEnv(gym.Env):
             terminated = True
             truncated = False
             info = {
-                "reason": "no_legal_moves_all",
+                "reason": "no_legal_moves_all_3",
                 "left_total": left_total,
                 "left_blue": left_each[BLUE],
                 "left_yellow": left_each[YELLOW],
@@ -396,8 +398,13 @@ class BlokusFourColorEnv(gym.Env):
         # 標準指數衰減
         # k 值決定了曲線的彎曲程度。k=0.04 可以讓 100 左右完美收尾在 -2
         k = 0.04 
-        base_reward = -4.0 * (1.0 - math.exp(-k * left_total))
+        base_reward = -2.0 * (1.0 - math.exp(-k * left_total))
 
+        # 棋子剩得越少，分數越高。完美清空為 +1.0
+        base_reward = 1.0 - (left_total / 80)
+    
+
+        print(f"base_reward = {base_reward}")
         # 如果你想給「完全清空 (0)」一個額外的完美加成 (Bonus)
         if left_total == 0:
             base_reward += 0.5  # 總分變成 0.5

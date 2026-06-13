@@ -23,9 +23,9 @@ def main():
             vf=[256, 256, 128]   # 價值網路 (Value Network) 稍微加深
         )
     )
-    '''
+    #'''
     model = MaskablePPO.load("ppo_blokus_four_color_soft", env=env)
-    model.learn(total_timesteps=200_000, reset_num_timesteps=False)
+    model.learn(total_timesteps=400_000, reset_num_timesteps=False)
     '''
     # 1. 建立支援 Mask 的 PPO 模型
     model = MaskablePPO(
