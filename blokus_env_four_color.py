@@ -404,7 +404,7 @@ class BlokusFourColorEnv(gym.Env):
         base_reward = 1.0 - (left_total / 80)
     
 
-        print(f"base_reward = {base_reward}")
+        # print(f"base_reward = {base_reward}")
         # 如果你想給「完全清空 (0)」一個額外的完美加成 (Bonus)
         if left_total == 0:
             base_reward += 0.5  # 總分變成 0.5
