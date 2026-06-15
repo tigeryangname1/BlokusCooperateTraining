@@ -44,14 +44,15 @@ def main():
         policy_kwargs=policy_kwargs,
         tensorboard_log="./tensorboard_logs/" # 建議開啟 TensorBoard 觀察回報與 explained_variance
     )
+    # 開啟語法: tensorboard_logs --logdir
     # 提高 entropy 鼓勵在死局前找其他出路
     # learning_rate=1e-4 調小學習率，走穩一點
 
     # 2. 開始訓練（MaskablePPO會自動去環境的 obs 裡找 "action_mask" 並套用）
-    model.learn(total_timesteps=400000)
+    model.learn(total_timesteps=100)
 
     #'''
-    model.save("ppo_blokus_four_color_soft")
+    #model.save("ppo_blokus_four_color_soft")
 
 if __name__ == "__main__":
     main()

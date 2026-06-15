@@ -25,9 +25,33 @@ class BlokusFourColorEnv(gym.Env):
         max_candidates: int = 512,
     ):
         super().__init__()
-        
+        # 請把這段加到你的環境 __init__ 裡面
+        self.time_stats = {
+            "block1_init_legal": 0.0,
+            "block2_timeout_check": 0.0,
+            "block3_all_color_check": 0.0,
+            "block4_ensure_color": 0.0,
+            "block5_get_move": 0.0,
+            "block6_corner_before": 0.0,
+            "block7_apply_move": 0.0,
+            "block8_corner_after_calc": 0.0,
+            "block9_final_check_switch": 0.0,
+    
+            # 區塊 9 細分計時器
+            "b9_1_a_any_legal_moves": 0.0,    # 核心：檢查四色是否都沒步 (self._any_legal_moves_for_any_color)
+            "b9_1_b_compute_left_total": 0.0, # 終局：計算剩餘方塊總數
+            "b9_1_c_compute_left_each": 0.0,  # 終局：計算各色剩餘方塊
+            "b9_1_d_compute_empty_cell": 0.0, # 終局：計算棋盤空格數
+            
+            "b9_2_switch_color": 0.0,         
+            "b9_3_gen_next_legal_moves": 0.0, 
+            "b9_4_get_padded_and_mask": 0.0,  
+            "b9_5_get_obs_and_misc": 0.0,
+        }
+        self.step_call_count = 0  # 記錄 step 被呼叫了幾次
+
         # 四個顏色都由同一個 agent 控制
-        self.colors = [BLUE, YELLOW, RED, GREEN]
+        self.colors = [BLUE, YELLOW, RED, GREEN] # state 裡面也有 colors ，為了判斷 legal_move 的 color_has_moves 變數暫存用，但這邊是為了顏色輪轉讓 agent 知道下一個是誰
         self.current_color_index = 0  # 0=BLUE, 1=YELLOW, 2=RED, 3=GREEN
         self.max_candidates = max_candidates
 
@@ -123,21 +147,83 @@ class BlokusFourColorEnv(gym.Env):
         # 核心改動：直接回傳快取住的 mask，絕對不會因為呼叫時間點不同而錯位！
         return self.current_mask
     
+    def _write_time_stats(self):
+        """將累積時間覆寫到檔案中"""
+        with open("step_time_report.txt", "w", encoding="utf-8") as f:
+            f.write(f"=== Step 效能累積報告 (總呼叫次數: {self.step_call_count}) ===\n")
+            f.write(f"{'區塊名稱':<30}{'累積總耗時 (秒)':<20}{'單次平均 (毫秒)':<20}\n")
+            f.write("-" * 70 + "\n")
+            for block, total_time in self.time_stats.items():
+                avg_ms = (total_time / self.step_call_count * 1000) if self.step_call_count > 0 else 0
+                f.write(f"{block:<30}{total_time:<20.4f}{avg_ms:<20.4f}\n")
+
     def step(self, action: int):
+        import time
+        self.step_call_count += 1
+        
+        # --- [區塊 1: 基礎初始化與合法步生成] ---
+        t_start = time.perf_counter()
         assert self.state is not None, "請先呼叫 reset()"
         self.current_steps += 1
         self.state
         current_color = self.colors[self.current_color_index]
-        legal_moves = self.state.generate_legal_moves(current_color)
+        
+        # --- [區塊 3: 四色皆無步終局檢查] ---
+        t_start = time.perf_counter()
+        if not self._any_legal_moves_for_any_color():
+            left_total = self._compute_leftover_cells_total(self.state)
+            left_each = self._compute_leftover_cells_each(self.state)
+            final_reward = self._final_reward(left_total, left_each)
+            empty_cells = self._compute_empty_board_cells()
+            self.current_padded_moves, self.current_mask = self._get_padded_moves_and_mask([])
+            obs = self._get_obs(self.current_mask)
+            terminated = True
+            truncated = False
+            info = {
+                "reason": "no_legal_moves_all_1",
+                "left_total": left_total,
+                "left_blue": left_each[BLUE],
+                "left_yellow": left_each[YELLOW],
+                "left_red": left_each[RED],
+                "left_green": left_each[GREEN],
+                "empty_cells": empty_cells,
+            }
+            self.time_stats["block3_all_color_check"] += (time.perf_counter() - t_start)
+            self._write_time_stats()  # 覆寫輸出檔案
+            return obs, final_reward, terminated, truncated, info
+        self.time_stats["block3_all_color_check"] += (time.perf_counter() - t_start)
+        # 【關鍵優化點】: 不再一開始就 generate_legal_moves！
+        # 直接拿我們之前做好的生死快取來判斷：
+        if not self.state.color_has_moves[current_color]:
+            # 如果這顏色沒步可走，直接執行你提供的「換下一色、打包 Mask、常規返回」流程
+            self._switch_color()
+            next_color = self.colors[self.current_color_index]
+            
+            # 為下一個顏色生成合法步（因為他是下一個要正式下棋的人，這裡才必須拿全量 moves 去做 Mask）
+            next_legal_moves = self.state.generate_legal_moves(next_color)
+            self.current_padded_moves, self.current_mask = self._get_padded_moves_and_mask(next_legal_moves)
+            obs = self._get_obs(self.current_mask)
+            
+            reward = 0.0  # 沒步可走的玩家，這一步的 reward 為 0
+            terminated = False
+            truncated = self.current_steps >= self.max_steps
+            info = {"reason": f"color_{current_color}_skipped_no_moves"}
+            
+            self.time_stats["block1_init_legal"] += (time.perf_counter() - t_start)
+            self._write_time_stats()
+            return obs, reward, terminated, truncated, info
+        # legal_moves = self.state.generate_legal_moves(current_color) # 這一步也不要了應該是可以
+        self.time_stats["block1_init_legal"] += (time.perf_counter() - t_start)
 
+        # --- [區塊 2: 最大步數 Timeout 檢查] ---
+        t_start = time.perf_counter()
         if self.current_steps >= self.max_steps:
             print(f"--- self.current_steps >= self.max_steps ---")
             left_total = self._compute_leftover_cells_total(self.state)
             left_each = self._compute_leftover_cells_each(self.state)
 
-            # 用和正常終局一樣的計算，再多扣一點
             base = self._final_reward(left_total, left_each)
-            reward = base - 100.0 # 額外再罰 50，就表達「拖到timeout更糟」
+            reward = base - 100.0 
 
             current_color = self.colors[self.current_color_index]
             legal_moves = self.state.generate_legal_moves(current_color)
@@ -155,63 +241,47 @@ class BlokusFourColorEnv(gym.Env):
                 "left_green": left_each[GREEN],
                 "empty_cells": self._compute_empty_board_cells(),
             }
+            self.time_stats["block2_timeout_check"] += (time.perf_counter() - t_start)
+            self._write_time_stats()  # 覆寫輸出檔案
             return obs, reward, terminated, truncated, info
-        # 如果四色都沒步可走 -> 結束
-        if not self._any_legal_moves_for_any_color():
-            # print(f"--- not self._any_legal_moves_for_any_color() ---")
-            left_total = self._compute_leftover_cells_total(self.state)
-            left_each = self._compute_leftover_cells_each(self.state)
-            final_reward = self._final_reward(left_total, left_each)
-            empty_cells = self._compute_empty_board_cells()
-            self.current_padded_moves, self.current_mask = self._get_padded_moves_and_mask(legal_moves)
-            obs = self._get_obs(self.current_mask)
-            terminated = True
-            truncated = False
-            info = {
-                "reason": "no_legal_moves_all_1",
-                "left_total": left_total,
-                "left_blue": left_each[BLUE],
-                "left_yellow": left_each[YELLOW],
-                "left_red": left_each[RED],
-                "left_green": left_each[GREEN],
-                "empty_cells": empty_cells,
-            }
-            return obs, final_reward, terminated, truncated, info
+        self.time_stats["block2_timeout_check"] += (time.perf_counter() - t_start)
 
-        # 確保 current_color 有步可以走，如果沒有就跳到下一個有步的顏色
-        self._ensure_current_color_has_moves()
         
-        self._last_legal_moves = legal_moves
+        # 應該是能夠保證此色有步可以走才會到這邊 (才會開始step)
+        # # --- [區塊 4: 確保當前顏色有步可走] --- 
+        # t_start = time.perf_counter()
+        # self._ensure_current_color_has_moves()
+        # self._last_legal_moves = legal_moves
 
-        # 若該色沒不可以走就跳到下一個step
-        if not legal_moves:
-            # print(f"--- not legal_moves ---")
-            left_total = self._compute_leftover_cells_total(self.state)
-            left_each = self._compute_leftover_cells_each(self.state)
-            final_reward = 0
-            empty_cells = self._compute_empty_board_cells()
-            current_color = self.colors[self.current_color_index]
-            legal_moves = self.state.generate_legal_moves(current_color)
-            self.current_padded_moves, self.current_mask = self._get_padded_moves_and_mask(legal_moves)
-            obs = self._get_obs(self.current_mask)
-            terminated = False #繼續跑
-            truncated = False
-            info = {
-                "reason": "no_legal_moves_2",
-                "left_total": left_total,
-                "left_blue": left_each[BLUE],
-                "left_yellow": left_each[YELLOW],
-                "left_red": left_each[RED],
-                "left_green": left_each[GREEN],
-                "empty_cells": empty_cells,
-            }
-            return obs, final_reward, terminated, truncated, info
-        # print(f"action = {action}")
+        # if not legal_moves:
+        #     left_total = self._compute_leftover_cells_total(self.state)
+        #     left_each = self._compute_leftover_cells_each(self.state)
+        #     final_reward = 0
+        #     empty_cells = self._compute_empty_board_cells()
+        #     current_color = self.colors[self.current_color_index]
+        #     legal_moves = self.state.generate_legal_moves(current_color)
+        #     self.current_padded_moves, self.current_mask = self._get_padded_moves_and_mask(legal_moves)
+        #     obs = self._get_obs(self.current_mask)
+        #     terminated = False 
+        #     truncated = False
+        #     info = {
+        #         "reason": "no_legal_moves_2",
+        #         "left_total": left_total,
+        #         "left_blue": left_each[BLUE],
+        #         "left_yellow": left_each[YELLOW],
+        #         "left_red": left_each[RED],
+        #         "left_green": left_each[GREEN],
+        #         "empty_cells": empty_cells,
+        #     }
+        #     self.time_stats["block4_ensure_color"] += (time.perf_counter() - t_start)
+        #     self._write_time_stats()  # 覆寫輸出檔案
+        #     return obs, final_reward, terminated, truncated, info
+        # self.time_stats["block4_ensure_color"] += (time.perf_counter() - t_start)
+
+        # --- [區塊 5: 取得 Move 與 偵錯檢查] ---
+        t_start = time.perf_counter()
         move = self.current_padded_moves[action]
-        # 理論上因為有 Action Mask，這裡的 move 絕對不會是 None。
-        # 如果是 None，代表環境或 Mask 套用邏輯有 Bug。
         if move is None:
-            # 這裡建議加上列印資訊，能幫你瞬間看清是哪裡不對
             print(f"--- 偵錯資訊 ---")
             print(f"當前玩家顏色: {current_color}")
             print(f"當前合法步數量: {len(legal_moves)}")
@@ -219,16 +289,18 @@ class BlokusFourColorEnv(gym.Env):
             print(f"該位置的遮罩狀態: {self.current_mask[action]}")
             self.state.print_board()
             raise RuntimeError(f"PPO選到了被遮罩的無效動作! Action ID: {action}")
+        self.time_stats["block5_get_move"] += (time.perf_counter() - t_start)
         
-         # 1. 【落子前】計算全團隊 4 個顏色的總可用角落數
-        # 假設顏色代號是 1, 2, 3, 4 (或是 0, 1, 2, 3，依你的設計調整)
+        # --- [區塊 6: 落子前角落計算] ---
+        t_start = time.perf_counter()
         all_colors = [1, 2, 3, 4]
         before_corners_count = 0
         for c in all_colors:
-            # 呼叫你本體現有的 get_color_corners，並計算集合的長度
             before_corners_count += len(self.state.get_color_corners(c))
+        self.time_stats["block6_corner_before"] += (time.perf_counter() - t_start)
         
-        # 套用這一步
+        # --- [區塊 7: 執行落子 (Apply Move)] ---
+        t_start = time.perf_counter()
         new_state = self.state.apply_move(
             current_color,
             move["shape"],
@@ -236,37 +308,55 @@ class BlokusFourColorEnv(gym.Env):
             move["y"],
             move["piece"],
         )
-        # 在 apply_move 後
-        
-        # 3. 【落子後】計算全團隊 4 個顏色的總可用角落數
+        self.time_stats["block7_apply_move"] += (time.perf_counter() - t_start)
+
+        # --- [區塊 8: 落子後角落與 Reward 計算] ---
+        t_start = time.perf_counter()
         after_corners_count = 0
         for c in all_colors:
             after_corners_count += len(new_state.get_color_corners(c))
 
-        # 4. 【計算 Step Reward】
-        # 空間增減量 = 落子後總數 - 落子前總數
         space_diff = after_corners_count - before_corners_count
-
         self.state = new_state
-        # 方塊大小分數
-        reward_size = len(move["shape"]) / 5 * 0.01 # 四色共享 reward
-        # 角落增減分數
+        reward_size = len(move["shape"]) / 5 * 0.01 
         reward_space = space_diff * 0.02
-
-        # (C) 懲罰項：如果全隊角落總數降得太低（代表有人被徹底堵死）
-        # 假設開局大家角很多，如果總角數低於某個閾值，給予集體警告
         reward_crisis = -0.5 if after_corners_count < 8 else 0.0
 
         step_reward = reward_size + reward_space + reward_crisis
         step_reward = 0
-        # 5) 檢查是否四色都沒步可走
-        if not self._any_legal_moves_for_any_color():
-            # print(f"--- not self._any_legal_moves_for_any_color() ---")
+        self.time_stats["block8_corner_after_calc"] += (time.perf_counter() - t_start)
+
+        # --- [區塊 9: 換色、下一手 Mask 與常規返回 (終局函數高度細分版)] ---
+        
+        # 9-1-a. 檢查是否四色都沒步可走 (呼叫外部或內部核心邏輯)
+        t_sub = time.perf_counter()
+        is_no_moves = not self._any_legal_moves_for_any_color()
+        self.time_stats["b9_1_a_any_legal_moves"] += (time.perf_counter() - t_sub)
+
+        if is_no_moves:
+            # --- 進入終局結算分支，細分內部所有函數 ---
+            
+            # 計算剩餘總方塊數
+            t_sub = time.perf_counter()
             left_total = self._compute_leftover_cells_total(self.state)
+            self.time_stats["b9_1_b_compute_left_total"] += (time.perf_counter() - t_sub)
+            
+            # 計算各色剩餘方塊數
+            t_sub = time.perf_counter()
             left_each = self._compute_leftover_cells_each(self.state)
+            self.time_stats["b9_1_c_compute_left_each"] += (time.perf_counter() - t_sub)
+            
+            # 計算基礎獎勵 (純數值運算，暫時歸在雜項)
             final_reward = self._final_reward(left_total, left_each)
             total_reward = step_reward + final_reward
+            
+            # 計算棋盤空格
+            t_sub = time.perf_counter()
             empty_cells = self._compute_empty_board_cells()
+            self.time_stats["b9_1_d_compute_empty_cell"] += (time.perf_counter() - t_sub)
+            
+            # 剩餘常規動作
+            t_sub = time.perf_counter()
             self.current_padded_moves, self.current_mask = self._get_padded_moves_and_mask(legal_moves)
             obs = self._get_obs(self.current_mask)
             terminated = True
@@ -280,24 +370,37 @@ class BlokusFourColorEnv(gym.Env):
                 "left_green": left_each[GREEN],
                 "empty_cells": empty_cells,
             }
+            self.time_stats["b9_5_get_obs_and_misc"] += (time.perf_counter() - t_sub)
+            self._write_time_stats()
             return obs, total_reward, terminated, truncated, info
 
-        # 6) 遊戲繼續：換到下一個顏色
+        # 9-2. 遊戲繼續：換到下一個顏色
+        t_sub = time.perf_counter()
         self._switch_color()
+        self.time_stats["b9_2_switch_color"] += (time.perf_counter() - t_sub)
 
-        # 7) 為「下一手」準備 Observation 與 Action Mask
+        # 9-3. 為「下一手」準備，生成下一個顏色的合法步
+        t_sub = time.perf_counter()
         next_color = self.colors[self.current_color_index]
         next_legal_moves = self.state.generate_legal_moves(next_color)
-        # 計算下一手的 mask
+        self.time_stats["b9_3_gen_next_legal_moves"] += (time.perf_counter() - t_sub)
+        
+        # 9-4. 計算下一手的 mask 與 padded_moves
+        t_sub = time.perf_counter()
         self.current_padded_moves, self.current_mask = self._get_padded_moves_and_mask(next_legal_moves)
+        self.time_stats["b9_4_get_padded_and_mask"] += (time.perf_counter() - t_sub)
         
-        # 構造回傳的 obs (必須包含下一手的 action_mask)
+        # 9-5. 構造回傳的 obs 與其餘常規返回設定
+        t_sub = time.perf_counter()
         obs = self._get_obs(self.current_mask)
-        
         reward = step_reward
         terminated = False
         truncated = self.current_steps >= self.max_steps
         info = {}
+        self.time_stats["b9_5_get_obs_and_misc"] += (time.perf_counter() - t_sub)
+        
+        # 覆寫輸出檔案並返回
+        self._write_time_stats()
         return obs, reward, terminated, truncated, info
 
     # -----------------------
@@ -501,25 +604,38 @@ class BlokusFourColorEnv(gym.Env):
 
     def _any_legal_moves_for_any_color(self) -> bool:
         """
-        是否還有任何顏色有合法步
+        優化版：利用快取狀態判斷是否還有任何顏色有合法步。
+        時間複雜度從 O(顏色數 * 窮舉所有步) 降到 O(顏色數)，幾乎是瞬間完成！
         """
         assert self.state is not None
-        for c in self.colors:
-            if self.state.generate_legal_moves(c):
-                return True
-        return False
-
+        # 直接檢查快取字典，只要還有任何一個顏色是 True，遊戲就還沒結束
+        return any(self.state.color_has_moves[c] for c in self.state.colors)
+    
     def _ensure_current_color_has_moves(self):
         """
-        如果 current_color 沒步、但其他顏色有，就跳到下一個有步的顏色。
+        超高速優化版：利用 self.color_has_moves 快取字典，
+        快速跳過已知沒步可走的玩家，避免重複進行沉重的合法步窮舉。
         """
         assert self.state is not None
 
         for _ in range(len(self.colors)):
             current_color = self.colors[self.current_color_index]
+            
+            # 【核心優化點 1】: 如果快取直接記錄這顏色早就沒步了，連算都不用算，直接跳下一色！
+            if not self.state.color_has_moves[current_color]:
+                self.current_color_index = (self.current_color_index + 1) % len(self.colors)
+                continue
+                
+            # 【核心優化點 2】: 只有在快取認為「它還有步」時，我們才呼叫 generate_legal_moves。
+            # 因為你在優化後的 generate_legal_moves 裡已經會自動更新 self.color_has_moves，
+            # 所以這裡只要拿到 moves，就能100%確認生死。
             legal_moves = self.state.generate_legal_moves(current_color)
+            
             if legal_moves:
+                # 確定有步，目前的 current_color_index 是合法的，收工！
                 return
+                
+            # 如果算完發現其實沒步了（此時 generate_legal_moves 內部已將其設為 False）
             # 換下一色試試
             self.current_color_index = (self.current_color_index + 1) % len(self.colors)
 

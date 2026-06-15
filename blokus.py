@@ -154,6 +154,8 @@ class GameState:
             RED:    [(0, BOARD_SIZE-1)],
             GREEN:  [(BOARD_SIZE-1, 0)],
         }
+        self.colors = [BLUE, YELLOW, RED, GREEN]
+        self.color_has_moves = {color: True for color in self.colors}
 
     # ---- 基礎工具 ----
 
@@ -288,17 +290,27 @@ class GameState:
         # new_state = (self)
         for dx, dy in shape_cells:
             x, y = origin_x + dx, origin_y + dy
-            new_state.board[y][x] = color
-        if piece_name in new_state.remaining_pieces[color]:
-            new_state.remaining_pieces[color].remove(piece_name)
-        return new_state
+            self.board[y][x] = color
+        if piece_name in self.remaining_pieces[color]:
+            self.remaining_pieces[color].remove(piece_name)
+        return self
 
     # ---- 合法步產生 ----
 
     def generate_legal_moves(self, color):
+        """
+        優化版：在每次生成合法步時，動態更新該顏色的生存狀態。
+        """
+        # 額外優化：如果這個顏色之前就已經被判定沒步了，連算都不用算，直接回傳空列表
+        if not self.color_has_moves[color]:
+            return []
+
         moves = []
-        corners = self.get_color_corners(color)
+        corners = self.get_color_corners(color) # 注意：如果是讀取 state 請確認路徑
+        
         if not corners:
+            # 沒有角落代表死路一條，更新狀態為 False
+            self.color_has_moves[color] = False
             return moves
 
         for piece_name in sorted(self.remaining_pieces[color]):
@@ -316,8 +328,12 @@ class GameState:
                                 "x": origin_x,
                                 "y": origin_y,
                             })
+        
+        # 【關鍵優化點】: 根據這次窮舉的結果，更新這個顏色的生死狀態
+        # 如果 moves 是空的，代表此顏色正式宣告陣亡，以後不用再幫它算步了
+        self.color_has_moves[color] = len(moves) > 0
+        
         return moves
-
     # ---- 兩色角落計數 ----
 
     def count_ally_corners(self):
