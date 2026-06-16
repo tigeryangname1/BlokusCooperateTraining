@@ -52,7 +52,7 @@ def main():
     model.learn(total_timesteps=100)
 
     #'''
-    #model.save("ppo_blokus_four_color_soft")
+    model.save("ppo_blokus_four_color_soft")
 
 if __name__ == "__main__":
     main()

@@ -3,7 +3,7 @@ import gymnasium as gym
 import math
 
 from gymnasium import spaces
-from blokus import GameState, BOARD_SIZE, BLUE, YELLOW, RED, GREEN, BASE_PIECES
+from blokus import GameState, BOARD_SIZE, BLUE, YELLOW, RED, GREEN, BASE_PIECES, ALL_PIECES
 
 
 class BlokusFourColorEnv(gym.Env):
@@ -22,7 +22,7 @@ class BlokusFourColorEnv(gym.Env):
 
     def __init__(
         self,
-        max_candidates: int = 512,
+        max_candidates: int = 36400,
     ):
         super().__init__()
         # 請把這段加到你的環境 __init__ 裡面
@@ -106,7 +106,45 @@ class BlokusFourColorEnv(gym.Env):
         self.current_steps = 0
         self.max_steps = 600  # 安全上限
 
-        # 【注意】請刪除原本末尾那段錯誤的 self.observation_space 重新賦值程式碼
+        # 1. 定義 21 個棋子的固定順序（從已展開的 ALL_PIECES 取得 21 個棋子名稱並排序）
+        self.ALL_PIECE_NAMES = sorted(list(ALL_PIECES.keys())) 
+        
+        # 2. 預先建立全域固定的動作空間 (All Possible Candidates)
+        self.GLOBAL_CANDIDATE_MOVES = []
+        
+        # 建立快速查詢字典：輸入 (piece, o_idx, x, y) 查 Action ID
+        self.MOVE_TO_ACTION_ID = {}
+        
+        action_id = 0
+        for piece_name in self.ALL_PIECE_NAMES:
+            # 這裡正確取得該棋子「已經展開的所有方向列表」
+            # 例如：1x1 方塊長度為 1；L型方塊長度為 8
+            orientations = ALL_PIECES[piece_name] 
+            
+            for o_idx, shape in enumerate(orientations):
+                for x in range(20):      # 20x20 棋盤
+                    for y in range(20):
+                        move_obj = {
+                            "piece": piece_name,
+                            "shape": shape,
+                            "x": x,
+                            "y": y,
+                            "o_idx": o_idx 
+                        }
+                        self.GLOBAL_CANDIDATE_MOVES.append(move_obj)
+                        
+                        # 記錄唯一的對應關係
+                        self.MOVE_TO_ACTION_ID[(piece_name, o_idx, x, y)] = action_id
+                        action_id += 1
+                        
+        # 這是你模型【精準且絕對固定】的 Action Space 總大小
+        self.total_action_space_size = len(self.GLOBAL_CANDIDATE_MOVES)
+        
+        print(f"=== 動作空間初始化完成！精準總動作數: {self.total_action_space_size} ===")
+        
+        # PPO 每次只需要讀取這個固定的 Candidate 指標，不需要重複建立
+        self.current_padded_moves = self.GLOBAL_CANDIDATE_MOVES
+
 
     # -----------------------
     # Gym API
@@ -284,7 +322,6 @@ class BlokusFourColorEnv(gym.Env):
         if move is None:
             print(f"--- 偵錯資訊 ---")
             print(f"當前玩家顏色: {current_color}")
-            print(f"當前合法步數量: {len(legal_moves)}")
             print(f"模型選擇的 Action ID: {action}")
             print(f"該位置的遮罩狀態: {self.current_mask[action]}")
             self.state.print_board()
@@ -574,7 +611,29 @@ class BlokusFourColorEnv(gym.Env):
             return None
         return candidate_moves[action]
     
-    def _get_padded_moves_and_mask(self, legal_moves: list[dict]) -> tuple[list[dict | None], list[bool]]:  
+    def _get_padded_moves_and_mask(self, legal_moves: list[dict]) -> tuple[list[dict], list[bool]]:  
+        """
+        超高速優化版（固定動作空間）：
+        移除沉重的排序邏輯，改用 O(N) 的雜湊映射直接將合法動作對齊到固定的 Action ID 上。
+        """
+        # 1. 建立一個長度與全域動作空間完全相同、預設皆為 False 的遮罩
+        action_mask = [False] * self.total_action_space_size
+        
+        # 2. 將當前盤面算出來的合法動作，透過字典一瞬間找出對應的固定 Action ID 並解鎖 (設為 True)
+        for m in legal_moves:
+            key = (m["piece"], m["o_idx"], m["x"], m["y"])
+            
+            # 安全防護：確保該動作存在於全域空間中（理論上一定在）
+            if key in self.MOVE_TO_ACTION_ID:
+                action_id = self.MOVE_TO_ACTION_ID[key]
+                action_mask[action_id] = True
+                
+        # 3. 完美的常規返回：
+        # 這裡不需要返回帶有 None 的列表了，因為 self.current_padded_moves 
+        # 永遠指向量不變的 self.GLOBAL_CANDIDATE_MOVES。
+        return self.GLOBAL_CANDIDATE_MOVES, action_mask
+    
+    def _get_padded_moves_and_mask_old(self, legal_moves: list[dict]) -> tuple[list[dict | None], list[bool]]:  
         """
         將合法動作填入固定大小的 slots 中，並產生對應的 Action Mask。
         確保同一個特徵的動作盡可能落在固定的語義位置。

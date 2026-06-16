@@ -134,6 +134,10 @@ ALL_PIECES = {
     for name, shape in BASE_PIECES.items()
 }
 
+print("=== 每個棋子的轉向數量清單 ===")
+for name, orientations in ALL_PIECES.items():
+    print(f"棋子名稱: {name:<5} | 轉向數量: {len(orientations)}")
+input()
 # ==============================
 # 遊戲狀態
 # ==============================
@@ -156,7 +160,6 @@ class GameState:
         }
         self.colors = [BLUE, YELLOW, RED, GREEN]
         self.color_has_moves = {color: True for color in self.colors}
-
     # ---- 基礎工具 ----
 
     def in_bounds(self, x, y):
@@ -290,10 +293,10 @@ class GameState:
         # new_state = (self)
         for dx, dy in shape_cells:
             x, y = origin_x + dx, origin_y + dy
-            self.board[y][x] = color
-        if piece_name in self.remaining_pieces[color]:
-            self.remaining_pieces[color].remove(piece_name)
-        return self
+            new_state.board[y][x] = color
+        if piece_name in new_state.remaining_pieces[color]:
+            new_state.remaining_pieces[color].remove(piece_name)
+        return new_state
 
     # ---- 合法步產生 ----
 
@@ -315,7 +318,8 @@ class GameState:
 
         for piece_name in sorted(self.remaining_pieces[color]):
             orientations = ALL_PIECES[piece_name]
-            for shape in orientations:
+            # 【關鍵點】直接在這裡用 enumerate() 就能抓出固定的 o_idx！
+            for o_idx, shape in enumerate(orientations):
                 # 嘗試將 shape 的某一格對準某個 corner
                 for (cx, cy) in corners:
                     for (dx, dy) in shape:
@@ -327,6 +331,7 @@ class GameState:
                                 "shape": shape,
                                 "x": origin_x,
                                 "y": origin_y,
+                                "o_idx": o_idx  # 增加第幾個轉向給PPO用
                             })
         
         # 【關鍵優化點】: 根據這次窮舉的結果，更新這個顏色的生死狀態
