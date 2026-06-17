@@ -34,8 +34,8 @@ def main():
         verbose=1,
         learning_rate=3e-4,     # 保持 3e-4，或根據收斂速度微調至 1e-4
         n_steps=4096,           # 每輪收集的樣本數
-        batch_size=512,         # 【強烈建議修改】放大 batch size 穩定梯度、加速 GPU 運算
-        n_epochs=10,            # 每次採樣後重複優化的次數
+        batch_size=4096,         # 【強烈建議修改】放大 batch size 穩定梯度、加速 GPU 運算
+        n_epochs=3,            # 每次採樣後重複優化的次數
         gamma=0.99,             # 重視長期回報（非常契合 Blokus 終局結算）
         gae_lambda=0.95,        # 保持穩定的優勢函數估計
         ent_coef=0.01,          # 【重要】強迫 Agent 探索多元的落子位置與卡位策略，避免過早死鎖 
@@ -49,7 +49,7 @@ def main():
     # learning_rate=1e-4 調小學習率，走穩一點
 
     # 2. 開始訓練（MaskablePPO會自動去環境的 obs 裡找 "action_mask" 並套用）
-    model.learn(total_timesteps=100)
+    model.learn(total_timesteps=100000)
 
     #'''
     model.save("ppo_blokus_four_color_soft")

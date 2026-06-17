@@ -134,10 +134,10 @@ ALL_PIECES = {
     for name, shape in BASE_PIECES.items()
 }
 
-print("=== 每個棋子的轉向數量清單 ===")
-for name, orientations in ALL_PIECES.items():
-    print(f"棋子名稱: {name:<5} | 轉向數量: {len(orientations)}")
-input()
+# print("=== 每個棋子的轉向數量清單 ===")
+# for name, orientations in ALL_PIECES.items():
+#     print(f"棋子名稱: {name:<5} | 轉向數量: {len(orientations)}")
+# input()
 # ==============================
 # 遊戲狀態
 # ==============================
