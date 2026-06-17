@@ -49,7 +49,7 @@ def main():
     # learning_rate=1e-4 調小學習率，走穩一點
 
     # 2. 開始訓練（MaskablePPO會自動去環境的 obs 裡找 "action_mask" 並套用）
-    model.learn(total_timesteps=100)
+    model.learn(total_timesteps=1000000)
 
     #'''
     model.save("ppo_blokus_four_color_soft")

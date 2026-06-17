@@ -140,7 +140,7 @@ class BlokusFourColorEnv(gym.Env):
         # 這是你模型【精準且絕對固定】的 Action Space 總大小
         self.total_action_space_size = len(self.GLOBAL_CANDIDATE_MOVES)
         
-        print(f"=== 動作空間初始化完成！精準總動作數: {self.total_action_space_size} ===")
+        # print(f"=== 動作空間初始化完成！精準總動作數: {self.total_action_space_size} ===")
         
         # PPO 每次只需要讀取這個固定的 Candidate 指標，不需要重複建立
         self.current_padded_moves = self.GLOBAL_CANDIDATE_MOVES
