@@ -22,7 +22,7 @@ class BlokusFourColorEnv(gym.Env):
 
     def __init__(
         self,
-        max_candidates: int = 491,
+        max_candidates: int = 36400,
     ):
         super().__init__()
         # 請把這段加到你的環境 __init__ 裡面
@@ -97,27 +97,30 @@ class BlokusFourColorEnv(gym.Env):
             }
         )
 
+        # === Action Space ===
+        self.action_space = spaces.Discrete(self.max_candidates)
+
         # 內部狀態
         self.state: GameState | None = None
         self._last_legal_moves: list[dict] = []
         self.current_steps = 0
         self.max_steps = 600  # 安全上限
 
-        # 1. 動作空間改為雙層：第一層大小 91，第二層大小 400
-        self.action_space = spaces.MultiDiscrete([91, 400])
-
-        # 2. 依然保持 21 個棋子的固定順序
+        # 1. 定義 21 個棋子的固定順序（從已展開的 ALL_PIECES 取得 21 個棋子名稱並排序）
         self.ALL_PIECE_NAMES = sorted(list(ALL_PIECES.keys())) 
-
-        # 3. 重新建立一個「形狀對照表」
-        # 建立一個全域列表，裡面依序存放 91 種形狀的詳細資訊
-        self.GLOBAL_SHAPES = [] # 長度會是 91
-        # 快速查詢：輸入 (piece_name, o_idx) 就能查到它是 91 種形狀中的哪一個 shape_id
-        self.PIECE_ORI_TO_SHAPE_ID = {} 
-
-        shape_id = 0
+        
+        # 2. 預先建立全域固定的動作空間 (All Possible Candidates)
+        self.GLOBAL_CANDIDATE_MOVES = []
+        
+        # 建立快速查詢字典：輸入 (piece, o_idx, x, y) 查 Action ID
+        self.MOVE_TO_ACTION_ID = {}
+        
+        action_id = 0
         for piece_name in self.ALL_PIECE_NAMES:
-            orientations = ALL_PIECES[piece_name]
+            # 這裡正確取得該棋子「已經展開的所有方向列表」
+            # 例如：1x1 方塊長度為 1；L型方塊長度為 8
+            orientations = ALL_PIECES[piece_name] 
+            
             for o_idx, shape in enumerate(orientations):
                 for x in range(20):      # 20x20 棋盤
                     for y in range(20):
@@ -636,33 +639,6 @@ class BlokusFourColorEnv(gym.Env):
         return candidate_moves[action]
     
     def _get_padded_moves_and_mask(self, legal_moves: list[dict]):  
-        """
-        雙層結構版 Mask：
-        將合法動作拆解，分別填入 91 個形狀遮罩與 400 個位置遮罩中。
-        """
-        # 建立預設為 False 的遮罩，總長度 91 + 400 = 491
-        shape_mask = [False] * 91
-        coord_mask = [False] * 400
-        
-        for m in legal_moves:
-            # 1. 找出這個動作對應的 shape_id (0~90)
-            key = (m["piece"], m["o_idx"])
-            if key in self.PIECE_ORI_TO_SHAPE_ID:
-                s_id = self.PIECE_ORI_TO_SHAPE_ID[key]
-                shape_mask[s_id] = True
-            
-            # 2. 找出這個動作的座標一維索引 (0~399)
-            c_id = m["x"] * 20 + m["y"]
-            coord_mask[c_id] = True
-            
-        # 將兩個遮罩拼接成一個長度 491 的一維陣列回傳
-        action_mask = shape_mask + coord_mask
-        
-        # 這裡的 candidate 其實不需要特別返回 None 填補了
-        # 因為解碼動作直接查 self.GLOBAL_SHAPES 即可
-        return self.GLOBAL_SHAPES, action_mask
-    
-    def _get_padded_moves_and_mask_old(self, legal_moves: list[dict]) -> tuple[list[dict | None], list[bool]]:  
         """
         將合法動作填入固定大小的 slots 中，並產生對應的 Action Mask。
         確保同一個特徵的動作盡可能落在固定的語義位置。

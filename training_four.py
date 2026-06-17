@@ -32,7 +32,7 @@ def main():
         "MultiInputPolicy",
         env,
         verbose=1,
-        learning_rate=3e-4,     # 保持 3e-4，或根據收斂速度微調至 1e-4
+        learning_rate=1e-3,     # 保持 3e-4，或根據收斂速度微調至 1e-4 # 3e-4覺得太慢 加快一下學習率
         n_steps=4096,           # 每輪收集的樣本數
         batch_size=4096,         # 【強烈建議修改】放大 batch size 穩定梯度、加速 GPU 運算
         n_epochs=3,            # 每次採樣後重複優化的次數
