@@ -22,7 +22,7 @@ class BlokusFourColorEnv(gym.Env):
 
     def __init__(
         self,
-        max_candidates: int = 36400,
+        max_candidates: int = 491,
     ):
         super().__init__()
         # 請把這段加到你的環境 __init__ 裡面
@@ -97,30 +97,27 @@ class BlokusFourColorEnv(gym.Env):
             }
         )
 
-        # === Action Space ===
-        self.action_space = spaces.Discrete(self.max_candidates)
-
         # 內部狀態
         self.state: GameState | None = None
         self._last_legal_moves: list[dict] = []
         self.current_steps = 0
         self.max_steps = 600  # 安全上限
 
-        # 1. 定義 21 個棋子的固定順序（從已展開的 ALL_PIECES 取得 21 個棋子名稱並排序）
+        # 1. 動作空間改為雙層：第一層大小 91，第二層大小 400
+        self.action_space = spaces.MultiDiscrete([91, 400])
+
+        # 2. 依然保持 21 個棋子的固定順序
         self.ALL_PIECE_NAMES = sorted(list(ALL_PIECES.keys())) 
-        
-        # 2. 預先建立全域固定的動作空間 (All Possible Candidates)
-        self.GLOBAL_CANDIDATE_MOVES = []
-        
-        # 建立快速查詢字典：輸入 (piece, o_idx, x, y) 查 Action ID
-        self.MOVE_TO_ACTION_ID = {}
-        
-        action_id = 0
+
+        # 3. 重新建立一個「形狀對照表」
+        # 建立一個全域列表，裡面依序存放 91 種形狀的詳細資訊
+        self.GLOBAL_SHAPES = [] # 長度會是 91
+        # 快速查詢：輸入 (piece_name, o_idx) 就能查到它是 91 種形狀中的哪一個 shape_id
+        self.PIECE_ORI_TO_SHAPE_ID = {} 
+
+        shape_id = 0
         for piece_name in self.ALL_PIECE_NAMES:
-            # 這裡正確取得該棋子「已經展開的所有方向列表」
-            # 例如：1x1 方塊長度為 1；L型方塊長度為 8
-            orientations = ALL_PIECES[piece_name] 
-            
+            orientations = ALL_PIECES[piece_name]
             for o_idx, shape in enumerate(orientations):
                 for x in range(20):      # 20x20 棋盤
                     for y in range(20):
@@ -317,16 +314,8 @@ class BlokusFourColorEnv(gym.Env):
         # self.time_stats["block4_ensure_color"] += (time.perf_counter() - t_start)
 
         # --- [區塊 5: 取得 Move 與 偵錯檢查] ---
-        t_start = time.perf_counter()
-        move = self.current_padded_moves[action]
-        if move is None:
-            print(f"--- 偵錯資訊 ---")
-            print(f"當前玩家顏色: {current_color}")
-            print(f"模型選擇的 Action ID: {action}")
-            print(f"該位置的遮罩狀態: {self.current_mask[action]}")
-            self.state.print_board()
-            raise RuntimeError(f"PPO選到了被遮罩的無效動作! Action ID: {action}")
-        self.time_stats["block5_get_move"] += (time.perf_counter() - t_start)
+        # 移除.. 因為mask不見了
+
         
         # --- [區塊 6: 落子前角落計算] ---
         t_start = time.perf_counter()
@@ -338,6 +327,41 @@ class BlokusFourColorEnv(gym.Env):
         
         # --- [區塊 7: 執行落子 (Apply Move)] ---
         t_start = time.perf_counter()
+        # 這裡傳進來的 action 會是像 [15, 243] 這樣的結構
+        shape_id = int(action[0])
+        coord_id = int(action[1])
+        # 1. 解碼成座標
+        x = coord_id // 20
+        y = coord_id % 20
+        
+        # 2. 解碼成方塊資訊
+        shape_info = self.GLOBAL_SHAPES[shape_id]
+        piece_name = shape_info["piece"]
+        shape = shape_info["shape"]
+        o_idx = shape_info["o_idx"]
+        
+        # 3. 封裝成你原本 apply_move 認得的格式
+        move = {
+            "piece": piece_name,
+            "shape": shape,
+            "x": x,
+            "y": y,
+            "o_idx": o_idx
+        }
+        
+        # 4. 【安全檢查】理論上有 Mask 保護下，通常是合法的，但若是不合法（例如該形狀不能放在該座標）
+        # 可以給予一個負獎勵並直接結束，或者強制挑一個合法的隨機步（RL 的安全防護網）
+        current_color = self.colors[self.current_color_index]
+        if not self.state.is_legal_move(current_color, shape, x, y):
+            # 如果模型不小心選到不合法的交叉組合 (例如 shape A 合法, 座標 B 合法, 但 A+B 組合不合法)
+            # 這裡我們做最安全的防護：直接幫他從原本算好的 legal_moves 裡挑第一步來執行，避免程式崩潰
+            if self._last_legal_moves:
+                move = self._last_legal_moves[0]
+            else:
+                # 真的完全沒步了
+                raise RuntimeError("模型選了無效步，且盤面也無合法步。")
+
+        # ... 接下來就完全接回你原本的落子與 Reward 計算邏輯 (apply_move) ...
         new_state = self.state.apply_move(
             current_color,
             move["shape"],
@@ -611,27 +635,32 @@ class BlokusFourColorEnv(gym.Env):
             return None
         return candidate_moves[action]
     
-    def _get_padded_moves_and_mask(self, legal_moves: list[dict]) -> tuple[list[dict], list[bool]]:  
+    def _get_padded_moves_and_mask(self, legal_moves: list[dict]):  
         """
-        超高速優化版（固定動作空間）：
-        移除沉重的排序邏輯，改用 O(N) 的雜湊映射直接將合法動作對齊到固定的 Action ID 上。
+        雙層結構版 Mask：
+        將合法動作拆解，分別填入 91 個形狀遮罩與 400 個位置遮罩中。
         """
-        # 1. 建立一個長度與全域動作空間完全相同、預設皆為 False 的遮罩
-        action_mask = [False] * self.total_action_space_size
+        # 建立預設為 False 的遮罩，總長度 91 + 400 = 491
+        shape_mask = [False] * 91
+        coord_mask = [False] * 400
         
-        # 2. 將當前盤面算出來的合法動作，透過字典一瞬間找出對應的固定 Action ID 並解鎖 (設為 True)
         for m in legal_moves:
-            key = (m["piece"], m["o_idx"], m["x"], m["y"])
+            # 1. 找出這個動作對應的 shape_id (0~90)
+            key = (m["piece"], m["o_idx"])
+            if key in self.PIECE_ORI_TO_SHAPE_ID:
+                s_id = self.PIECE_ORI_TO_SHAPE_ID[key]
+                shape_mask[s_id] = True
             
-            # 安全防護：確保該動作存在於全域空間中（理論上一定在）
-            if key in self.MOVE_TO_ACTION_ID:
-                action_id = self.MOVE_TO_ACTION_ID[key]
-                action_mask[action_id] = True
-                
-        # 3. 完美的常規返回：
-        # 這裡不需要返回帶有 None 的列表了，因為 self.current_padded_moves 
-        # 永遠指向量不變的 self.GLOBAL_CANDIDATE_MOVES。
-        return self.GLOBAL_CANDIDATE_MOVES, action_mask
+            # 2. 找出這個動作的座標一維索引 (0~399)
+            c_id = m["x"] * 20 + m["y"]
+            coord_mask[c_id] = True
+            
+        # 將兩個遮罩拼接成一個長度 491 的一維陣列回傳
+        action_mask = shape_mask + coord_mask
+        
+        # 這裡的 candidate 其實不需要特別返回 None 填補了
+        # 因為解碼動作直接查 self.GLOBAL_SHAPES 即可
+        return self.GLOBAL_SHAPES, action_mask
     
     def _get_padded_moves_and_mask_old(self, legal_moves: list[dict]) -> tuple[list[dict | None], list[bool]]:  
         """
