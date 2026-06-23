@@ -2,3 +2,4 @@ cprofile_result.txt
 /tensorboard_logs
 step_time_report.txt
 ppo_blokus_four_color_soft.zip
+/logs_perf
