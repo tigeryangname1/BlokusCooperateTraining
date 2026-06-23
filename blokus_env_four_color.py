@@ -4,7 +4,8 @@ import math
 
 from gymnasium import spaces
 from blokus import GameState, BOARD_SIZE, BLUE, YELLOW, RED, GREEN, BASE_PIECES, ALL_PIECES
-
+import os
+from datetime import datetime
 
 class BlokusFourColorEnv(gym.Env):
     """
@@ -145,6 +146,24 @@ class BlokusFourColorEnv(gym.Env):
         # PPO 每次只需要讀取這個固定的 Candidate 指標，不需要重複建立
         self.current_padded_moves = self.GLOBAL_CANDIDATE_MOVES
 
+        # 1. 定義並自動建立效能日誌資料夾
+        self.log_dir = "logs_perf"
+        os.makedirs(self.log_dir, exist_ok=True)
+
+        # 2. 根據目前時間生成「這一次訓練/這一局」的專屬檔名
+        # 格式會長這樣：logs_perf/perf_report_20260618_221805.txt
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.report_filename = os.path.join(self.log_dir, f"perf_report_{timestamp}.txt")
+
+        # 建立一個顏色到索引的映射，方便管理矩陣 (假設你的遊戲是 4 色)
+        self.color_to_idx = {color: i for i, color in enumerate(self.colors)}
+        num_colors = len(self.colors)
+
+        # 初始化每種顏色專屬的特徵圖 (20x20)
+        # 數值型態用 np.int8 或 np.float32 都可以，這裡用 int8 節省空間
+        self.attachment_maps = np.zeros((num_colors, 20, 20), dtype=np.int8)
+        self.extension_maps = np.zeros((num_colors, 20, 20), dtype=np.int8)
+
 
     # -----------------------
     # Gym API
@@ -170,6 +189,9 @@ class BlokusFourColorEnv(gym.Env):
         self.current_padded_moves, self.current_mask = self._get_padded_moves_and_mask(legal_moves)
         
         obs = self._get_obs(self.current_mask)
+        # 徹底清空戰略特徵圖
+        self.attachment_maps.fill(0)
+        self.extension_maps.fill(0)
 
         info = {}
         return obs, info
@@ -186,11 +208,20 @@ class BlokusFourColorEnv(gym.Env):
         return self.current_mask
     
     def _write_time_stats(self):
-        """將累積時間覆寫到檔案中"""
-        with open("step_time_report.txt", "w", encoding="utf-8") as f:
+        """將累積時間覆寫到帶有時間戳記的專屬檔案中"""
+        # 【進階效能優化】：不要每一步都寫硬碟！
+        # 只有在第 1 步、或每隔 1000 步、或遊戲結束（可以手動強制呼叫）時才寫入
+        if self.step_call_count > 1 and self.step_call_count % 1000 != 0:
+            return
+
+        # 使用 __init__ 時就決定好的專屬路徑進行覆寫 ("w")
+        with open(self.report_filename, "w", encoding="utf-8") as f:
             f.write(f"=== Step 效能累積報告 (總呼叫次數: {self.step_call_count}) ===\n")
+            f.write(f"報告生成時間: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write("-" * 70 + "\n")
             f.write(f"{'區塊名稱':<30}{'累積總耗時 (秒)':<20}{'單次平均 (毫秒)':<20}\n")
             f.write("-" * 70 + "\n")
+            
             for block, total_time in self.time_stats.items():
                 avg_ms = (total_time / self.step_call_count * 1000) if self.step_call_count > 0 else 0
                 f.write(f"{block:<30}{total_time:<20.4f}{avg_ms:<20.4f}\n")
@@ -286,38 +317,19 @@ class BlokusFourColorEnv(gym.Env):
 
         
         # 應該是能夠保證此色有步可以走才會到這邊 (才會開始step)
-        # # --- [區塊 4: 確保當前顏色有步可走] --- 
-        # t_start = time.perf_counter()
-        # self._ensure_current_color_has_moves()
-        # self._last_legal_moves = legal_moves
-
-        # if not legal_moves:
-        #     left_total = self._compute_leftover_cells_total(self.state)
-        #     left_each = self._compute_leftover_cells_each(self.state)
-        #     final_reward = 0
-        #     empty_cells = self._compute_empty_board_cells()
-        #     current_color = self.colors[self.current_color_index]
-        #     legal_moves = self.state.generate_legal_moves(current_color)
-        #     self.current_padded_moves, self.current_mask = self._get_padded_moves_and_mask(legal_moves)
-        #     obs = self._get_obs(self.current_mask)
-        #     terminated = False 
-        #     truncated = False
-        #     info = {
-        #         "reason": "no_legal_moves_2",
-        #         "left_total": left_total,
-        #         "left_blue": left_each[BLUE],
-        #         "left_yellow": left_each[YELLOW],
-        #         "left_red": left_each[RED],
-        #         "left_green": left_each[GREEN],
-        #         "empty_cells": empty_cells,
-        #     }
-        #     self.time_stats["block4_ensure_color"] += (time.perf_counter() - t_start)
-        #     self._write_time_stats()  # 覆寫輸出檔案
-        #     return obs, final_reward, terminated, truncated, info
-        # self.time_stats["block4_ensure_color"] += (time.perf_counter() - t_start)
+        # --- [區塊 4: 確保當前顏色有步可走] --- 
 
         # --- [區塊 5: 取得 Move 與 偵錯檢查] ---
-        # 移除.. 因為mask不見了
+        move = self.current_padded_moves[action]
+        if move is None:
+            print(f"--- 偵錯資訊 ---")
+            print(f"當前玩家顏色: {current_color}")
+            print(f"當前合法步數量: {len(legal_moves)}")
+            print(f"模型選擇的 Action ID: {action}")
+            print(f"該位置的遮罩狀態: {self.current_mask[action]}")
+            self.state.print_board()
+            raise RuntimeError(f"PPO選到了被遮罩的無效動作! Action ID: {action}")
+        self.time_stats["block5_get_move"] += (time.perf_counter() - t_start)
 
         
         # --- [區塊 6: 落子前角落計算] ---
@@ -330,41 +342,6 @@ class BlokusFourColorEnv(gym.Env):
         
         # --- [區塊 7: 執行落子 (Apply Move)] ---
         t_start = time.perf_counter()
-        # 這裡傳進來的 action 會是像 [15, 243] 這樣的結構
-        shape_id = int(action[0])
-        coord_id = int(action[1])
-        # 1. 解碼成座標
-        x = coord_id // 20
-        y = coord_id % 20
-        
-        # 2. 解碼成方塊資訊
-        shape_info = self.GLOBAL_SHAPES[shape_id]
-        piece_name = shape_info["piece"]
-        shape = shape_info["shape"]
-        o_idx = shape_info["o_idx"]
-        
-        # 3. 封裝成你原本 apply_move 認得的格式
-        move = {
-            "piece": piece_name,
-            "shape": shape,
-            "x": x,
-            "y": y,
-            "o_idx": o_idx
-        }
-        
-        # 4. 【安全檢查】理論上有 Mask 保護下，通常是合法的，但若是不合法（例如該形狀不能放在該座標）
-        # 可以給予一個負獎勵並直接結束，或者強制挑一個合法的隨機步（RL 的安全防護網）
-        current_color = self.colors[self.current_color_index]
-        if not self.state.is_legal_move(current_color, shape, x, y):
-            # 如果模型不小心選到不合法的交叉組合 (例如 shape A 合法, 座標 B 合法, 但 A+B 組合不合法)
-            # 這裡我們做最安全的防護：直接幫他從原本算好的 legal_moves 裡挑第一步來執行，避免程式崩潰
-            if self._last_legal_moves:
-                move = self._last_legal_moves[0]
-            else:
-                # 真的完全沒步了
-                raise RuntimeError("模型選了無效步，且盤面也無合法步。")
-
-        # ... 接下來就完全接回你原本的落子與 Reward 計算邏輯 (apply_move) ...
         new_state = self.state.apply_move(
             current_color,
             move["shape"],
@@ -372,6 +349,42 @@ class BlokusFourColorEnv(gym.Env):
             move["y"],
             move["piece"],
         )
+
+        current_idx = self.color_to_idx[current_color]
+        # ==========================================
+        # 🎯 【新增】計算「好型」戰略獎勵 (Strategic Reward)
+        # ==========================================
+        strategic_reward = 0.0
+        
+        # 權重係數（你可以根據訓練狀況調整這兩個數值）
+        ATTACHMENT_MULTIPLIER = 0.5  # 踩到貼合區（幫隊友防守、鞏固）的加分權重
+        EXTENSION_MULTIPLIER = 0.3   # 踩到延伸區（擋到隊友出路）的扣分權重
+
+        # 遍歷這次落子佔據的所有絕對座標
+        for dx, dy in move["shape"]:
+            ax = move["x"] + dx
+            ay = move["y"] + dy
+            
+            if 0 <= ax < 20 and 0 <= ay < 20:
+                # 獲取落子前，隊友在這一格留下的戰略評級數值
+                # 注意：這時候的 map 裡面裝的正是其他隊友累加出來的幾何特徵
+                attach_val = self.attachment_maps[current_idx, ax, ay]
+                ext_val = self.extension_maps[current_idx, ax, ay]
+                
+                # 依照 map 的權重等級進行加扣分
+                if attach_val > 0:
+                    strategic_reward += float(attach_val) * ATTACHMENT_MULTIPLIER
+                if ext_val > 0:
+                    strategic_reward -= float(ext_val) * EXTENSION_MULTIPLIER
+
+        # 將戰略獎勵加到你原本的基礎 reward 上（假設你原本的變數叫 reward）
+        # reward += strategic_reward
+        # ==========================================
+        self._update_strategic_maps(current_idx, move["shape"], move["x"], move["y"])
+        # print(f"strategic_reward: {strategic_reward}")
+        # debug_print_strategic_map(self.attachment_maps, current_idx, f"{current_color} - 貼合層 (Attachment Map)")
+        # debug_print_strategic_map(self.extension_maps, current_idx, f"{current_color} - 延伸層 (Extension Map)")
+
         self.time_stats["block7_apply_move"] += (time.perf_counter() - t_start)
 
         # --- [區塊 8: 落子後角落與 Reward 計算] ---
@@ -387,7 +400,7 @@ class BlokusFourColorEnv(gym.Env):
         reward_crisis = -0.5 if after_corners_count < 8 else 0.0
 
         step_reward = reward_size + reward_space + reward_crisis
-        step_reward = 0
+        step_reward = strategic_reward
         self.time_stats["block8_corner_after_calc"] += (time.perf_counter() - t_start)
 
         # --- [區塊 9: 換色、下一手 Mask 與常規返回 (終局函數高度細分版)] ---
@@ -533,6 +546,9 @@ class BlokusFourColorEnv(gym.Env):
             "remaining_green": remaining_green,
             "turn": turn_flag,
             "action_mask": mask_array,
+            # 複製一份並強制轉成 float32 型態餵給 PPO
+            "attachment_maps": self.attachment_maps.copy().astype(np.float32),
+            "extension_maps": self.extension_maps.copy().astype(np.float32)
         }
 
     def _compute_leftover_cells_total(self, state: GameState) -> int:
@@ -620,6 +636,70 @@ class BlokusFourColorEnv(gym.Env):
         else:
             base = -1.3 * left_total
         return base
+    
+    def _update_strategic_maps(self, color_idx: int, shape: list[tuple[int, int]], origin_x: int, origin_y: int):
+        """
+        當某個顏色落子後，增量更新「除了自己以外」所有友方的貼合層與延伸層。
+        """
+        # 1. 算出這顆棋子在棋盤上的絕對座標集合
+        absolute_cells = set()
+        for dx, dy in shape:
+            ax = origin_x + dx
+            ay = origin_y + dy
+            if 0 <= ax < 20 and 0 <= ay < 20:
+                absolute_cells.add((ax, ay))
+                
+        # 2. 定義幾何鄰域的相對偏移
+        ADJACENT_OFFSETS = [(-1, 0), (1, 0), (0, -1), (0, 1)]   # 上下左右 (邊)
+        DIAGONAL_OFFSETS = [(-1, -1), (-1, 1), (1, -1), (1, 1)]  # 斜對角 1 格 (角)
+        
+        # 蒐集全域的貼合點與延伸點（先用區域變數存起來）
+        local_attachment_increments = []
+        local_extension_increments = []
+        
+        forbidden_adjacent_cells = set()
+        potential_extensions = set()
+        
+        # 3. 第一輪：遍歷棋子本體，計算出這顆棋子產生的幾何影響範圍
+        for (ax, ay) in absolute_cells:
+            # 處理貼合邊
+            for dx, dy in ADJACENT_OFFSETS:
+                nx, ny = ax + dx, ay + dy
+                if 0 <= nx < 20 and 0 <= ny < 20 and (nx, ny) not in absolute_cells:
+                    local_attachment_increments.append((nx, ny))
+                    forbidden_adjacent_cells.add((nx, ny))
+            
+            # 處理潛在延伸角
+            for dx, dy in DIAGONAL_OFFSETS:
+                nx, ny = ax + dx, ay + dy
+                if 0 <= nx < 20 and 0 <= ny < 20 and (nx, ny) not in absolute_cells:
+                    potential_extensions.add((nx, ny))
+
+        # 過濾出真正的延伸點
+        for (nx, ny) in potential_extensions:
+            if (nx, ny) not in forbidden_adjacent_cells:
+                local_extension_increments.append((nx, ny))
+
+        # 4. 第二輪：【核心修改】將這些加分，套用到「除了自己以外」的所有友方層
+        # 假設你的總顏色數是 4 (0, 1, 2, 3)
+        num_colors = self.attachment_maps.shape[0] 
+        
+        for c in range(num_colors):
+            if c != color_idx:  # 👈 關鍵：排除自己！例如 1 落子，就加在 0, 2, 3 上
+                
+                # 套用貼合層加分
+                for (nx, ny) in local_attachment_increments:
+                    self.attachment_maps[c, nx, ny] += 1
+                    
+                # 套用延伸層加分
+                for (nx, ny) in local_extension_increments:
+                    self.extension_maps[c, nx, ny] += 1
+
+        # 5. 安全防護：全域凡是已經有實體棋子佔領的格子，全部特徵歸零
+        for (ax, ay) in absolute_cells:
+            self.attachment_maps[:, ax, ay] = 0
+            self.extension_maps[:, ax, ay] = 0
+
 
     def _select_candidate_moves(self, legal_moves: list[dict]) -> list[dict]:
         if len(legal_moves) <= self.max_candidates:
@@ -759,3 +839,36 @@ class BlokusFourColorEnv(gym.Env):
         )
         print("Current turn:", ["BLUE", "YELLOW", "RED", "GREEN"][self.current_color_index])
         print()
+def debug_print_strategic_map(matrix_3d, color_idx, title, highlight_cells=None):
+    """
+    安全牌：直接讀取 (num_colors, 20, 20) 的三維特徵圖，
+    精確印出指定顏色的 20x20 盤面，並自動標註落子位置。
+    """
+    print(f"\n=== {title} (顏色索引: {color_idx}) ===")
+    
+    # 印出上方的 X 軸邊界提示 (0, 5, 10, 15)
+    header = "    "
+    for x in range(20):
+        if x % 5 == 0:
+            header += f"{x:<5}"
+    print(header)
+    
+    # 逐行 (y) 逐列 (x) 印出
+    for y in range(20):
+        line = f"{y:<3} "  # 左側 Y 軸座標提示
+        for x in range(20):
+            # 安全檢查：防範部分環境將座標定義為 matrix[color, y, x] 的情況
+            # 這裡我們預設你的定義是 [color, x, y]，若印出形狀反轉，可手動改為 [color, y, x]
+            try:
+                val = int(matrix_3d[color_idx, x, y])
+            except IndexError:
+                val = int(matrix_3d[color_idx, y, x])
+                
+            # 檢查這一格是不是剛才落子的實體方塊
+            if highlight_cells and (x, y) in highlight_cells:
+                line += "■ "
+            elif val > 0:
+                line += f"{val} "  # 印出權重等級 (例如 1, 2)
+            else:
+                line += ". "
+        print(line)

@@ -1,0 +1,22 @@
+=== Step 效能累積報告 (總呼叫次數: 1000) ===
+報告生成時間: 2026-06-23 11:04:28
+----------------------------------------------------------------------
+區塊名稱                          累積總耗時 (秒)           單次平均 (毫秒)           
+----------------------------------------------------------------------
+block1_init_legal             1.3952              1.3952              
+block2_timeout_check          0.0007              0.0007              
+block3_all_color_check        0.1226              0.1226              
+block4_ensure_color           0.0000              0.0000              
+block5_get_move               0.0021              0.0021              
+block6_corner_before          0.8683              0.8683              
+block7_apply_move             0.4238              0.4238              
+block8_corner_after_calc      0.8765              0.8765              
+block9_final_check_switch     0.0000              0.0000              
+b9_1_a_any_legal_moves        0.0024              0.0024              
+b9_1_b_compute_left_total     0.0000              0.0000              
+b9_1_c_compute_left_each      0.0000              0.0000              
+b9_1_d_compute_empty_cell     0.0000              0.0000              
+b9_2_switch_color             0.0012              0.0012              
+b9_3_gen_next_legal_moves     18.6625             18.6625             
+b9_4_get_padded_and_mask      4.7723              4.7723              
+b9_5_get_obs_and_misc         1.6498              1.6498              
