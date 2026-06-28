@@ -25,7 +25,19 @@ def main():
     )
     #'''
     model = MaskablePPO.load("ppo_blokus_four_color_soft", env=env)
-    model.learn(total_timesteps=1000_000, reset_num_timesteps=False)
+    model.ent_coef = 0.05        # 提高探索（原本太低導致 entropy=-0.25）
+    model.learning_rate = 0.0003  # 降低 lr，細緻調整
+
+    # 同步更新 policy 內部的 optimizer（必須，否則 lr 不會生效）
+    import torch
+    for param_group in model.policy.optimizer.param_groups:
+        param_group['lr'] = 0.0003
+
+    model.learn(
+        total_timesteps=3_000_000,   # 跑久一點
+        reset_num_timesteps=False
+    )
+
     '''
     # 1. 建立支援 Mask 的 PPO 模型
     model = MaskablePPO(

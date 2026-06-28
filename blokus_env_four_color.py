@@ -322,8 +322,10 @@ class BlokusFourColorEnv(gym.Env):
         # --- [區塊 4: 確保當前顏色有步可走] --- 
 
         # --- [區塊 5: 取得 Move 與 偵錯檢查] ---
-        move = self.current_padded_moves[action]
-        if move is None:
+        move = self.GLOBAL_CANDIDATE_MOVES[action]
+        
+        # 但要確認這個 move 確實是合法的（mask 有開）
+        if not self.current_mask[action]:
             print(f"--- 偵錯資訊 ---")
             print(f"當前玩家顏色: {current_color}")
             print(f"當前合法步數量: {len(legal_moves)}")
@@ -359,8 +361,8 @@ class BlokusFourColorEnv(gym.Env):
         strategic_reward = 0.0
         
         # 權重係數（你可以根據訓練狀況調整這兩個數值）
-        ATTACHMENT_MULTIPLIER = 0.02  # 踩到貼合區（幫隊友防守、鞏固）的加分權重
-        EXTENSION_MULTIPLIER = 0.01   # 踩到延伸區（擋到隊友出路）的扣分權重
+        ATTACHMENT_MULTIPLIER = 0.01  # 踩到貼合區（幫隊友防守、鞏固）的加分權重
+        EXTENSION_MULTIPLIER = 0.02   # 踩到延伸區（擋到隊友出路）的扣分權重
 
         # 遍歷這次落子佔據的所有絕對座標
         for dx, dy in move["shape"]:
@@ -402,7 +404,7 @@ class BlokusFourColorEnv(gym.Env):
         reward_crisis = -0.5 if after_corners_count < 8 else 0.0
 
         step_reward = reward_size + reward_space + reward_crisis
-        step_reward = strategic_reward
+        step_reward = strategic_reward + reward_size
         self.time_stats["block8_corner_after_calc"] += (time.perf_counter() - t_start)
 
         # --- [區塊 9: 換色、下一手 Mask 與常規返回 (終局函數高度細分版)] ---
@@ -580,14 +582,12 @@ class BlokusFourColorEnv(gym.Env):
         left_each: 每個 color 剩餘的方格數，例如 {0: 10, 1: 12, 2: 8, 3: 15}
         """
 
-        # 標準指數衰減
-        # k 值決定了曲線的彎曲程度。k=0.04 可以讓 100 左右完美收尾在 -2
-        k = 0.04 
-        base_reward = -2.0 * (1.0 - math.exp(-k * left_total))
-
         # 棋子剩得越少，分數越高。完美清空為 +1.0
-        base_reward = 1.0 - (left_total / 80)
+        # 一開始訓練以80步為目標 # 最後的 * 5 是權重 因為多了 step_reward
+        # base_reward = (1.0 - (left_total / 80) * 5)
     
+        # 剩餘60步左右讓他有剩餘就是扣分 但因為還有step_reward約3~5分左右 所以大概剩餘40會開始轉正，先看訓練結果
+        base_reward = - (left_total) * 0.1
 
         # print(f"base_reward = {base_reward}")
         # 如果你想給「完全清空 (0)」一個額外的完美加成 (Bonus)
@@ -619,7 +619,7 @@ class BlokusFourColorEnv(gym.Env):
         # 3) 最終結算
         # ==========================================
         final_score = base_reward - balance_penalty
-        final_score = final_score * 15 # 給個權重 因為多了 step_reward
+        final_score = final_score  
         return float(final_score)
     def old_final_reward(self, left_total: int, left_each: dict[int, int]) -> float:
         # 1) 先算 base
@@ -719,31 +719,81 @@ class BlokusFourColorEnv(gym.Env):
         if action < 0 or action >= len(candidate_moves):
             return None
         return candidate_moves[action]
-    
-    def _get_padded_moves_and_mask(self, legal_moves: list[dict]):  
-        """
-        將合法動作填入固定大小的 slots 中，並產生對應的 Action Mask。
-        確保同一個特徵的動作盡可能落在固定的語義位置。
-        """
-        # 1. 為了保持某種程度的語義一致性，我們使用全域固定的 key 排序（而非動態的盤面分數）
-        # 例如：依據方塊名稱字串、x座標、y座標排序。這樣相同的動作在不同回合會排在相對一致的位置。
-        fixed_sorted_moves = sorted(
-            legal_moves, 
-            key=lambda m: (m["piece"], m["x"], m["y"])
-        )
+
+    def _get_padded_moves_and_mask(self, legal_moves: list[dict]):
+        action_mask = np.zeros(self.total_action_space_size, dtype=bool)
         
-        candidate_moves = []
-        action_mask = []
+        for move in legal_moves:
+            key = (move["piece"], move["o_idx"], move["x"], move["y"])
+            action_id = self.MOVE_TO_ACTION_ID.get(key)
+            if action_id is not None:
+                action_mask[action_id] = True
         
-        for i in range(self.max_candidates):
-            if i < len(fixed_sorted_moves):
-                candidate_moves.append(fixed_sorted_moves[i])
-                action_mask.append(True)  # 合法動作
+        return self.GLOBAL_CANDIDATE_MOVES, action_mask
+    def debug_mask_validation(env, n_steps=10):
+        """
+        驗證 mask 與 GLOBAL_CANDIDATE_MOVES 的對應是否正確
+        """
+        obs, info = env.reset()
+        print("=== Mask 驗證測試開始 ===\n")
+
+        for step in range(n_steps):
+            mask = env.current_mask  # shape: (36400,)
+            legal_indices = np.where(mask)[0]
+            
+            print(f"--- Step {step + 1} ---")
+            print(f"當前顏色: {env.colors[env.current_color_index]}")
+            print(f"Mask 中合法動作數量: {len(legal_indices)}")
+
+            # 驗證 1：mask 裡每個 True 的 action，對應的 move 要能在 legal_moves 裡找到
+            current_color = env.colors[env.current_color_index]
+            real_legal_moves = env.state.generate_legal_moves(current_color)
+            real_legal_keys = set(
+                (m["piece"], m["o_idx"], m["x"], m["y"]) for m in real_legal_moves
+            )
+            
+            mask_legal_keys = set()
+            for idx in legal_indices:
+                move = env.GLOBAL_CANDIDATE_MOVES[idx]
+                key = (move["piece"], move["o_idx"], move["x"], move["y"])
+                mask_legal_keys.add(key)
+
+            missing_in_mask = real_legal_keys - mask_legal_keys
+            extra_in_mask   = mask_legal_keys - real_legal_keys
+
+            if missing_in_mask:
+                print(f"  ❌ 有 {len(missing_in_mask)} 個合法動作沒出現在 mask 裡！")
+                for k in list(missing_in_mask)[:3]:
+                    print(f"     缺少: {k}")
             else:
-                candidate_moves.append(None)
-                action_mask.append(False) # 遮罩掉的無效動作
-                
-        return candidate_moves, action_mask
+                print(f"  ✅ 所有合法動作都在 mask 裡")
+
+            if extra_in_mask:
+                print(f"  ❌ 有 {len(extra_in_mask)} 個 mask=True 但實際不合法！")
+                for k in list(extra_in_mask)[:3]:
+                    print(f"     多餘: {k}")
+            else:
+                print(f"  ✅ Mask 沒有多餘的非法動作")
+
+            # 驗證 2：從 mask 中隨機選一個合法動作執行
+            if len(legal_indices) == 0:
+                print("  ⚠️  沒有合法動作，跳過此步")
+                break
+
+            action = np.random.choice(legal_indices)
+            chosen_move = env.GLOBAL_CANDIDATE_MOVES[action]
+            print(f"  隨機選擇 action={action}, piece={chosen_move['piece']}, "
+                f"o_idx={chosen_move['o_idx']}, x={chosen_move['x']}, y={chosen_move['y']}")
+
+            obs, reward, terminated, truncated, info = env.step(action)
+            print(f"  執行後 reward={reward:.4f}, terminated={terminated}, truncated={truncated}\n")
+
+            if terminated or truncated:
+                print("=== Episode 結束 ===")
+                break
+
+        print("=== Mask 驗證測試完畢 ===")
+    
     # -----------------------
     # 顏色輪轉 & 合法步檢查
     # -----------------------
