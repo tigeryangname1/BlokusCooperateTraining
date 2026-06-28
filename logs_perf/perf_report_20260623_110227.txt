@@ -1,22 +1,22 @@
-=== Step 效能累積報告 (總呼叫次數: 2000) ===
-報告生成時間: 2026-06-23 11:06:16
+=== Step 效能累積報告 (總呼叫次數: 4000) ===
+報告生成時間: 2026-06-23 11:10:00
 ----------------------------------------------------------------------
 區塊名稱                          累積總耗時 (秒)           單次平均 (毫秒)           
 ----------------------------------------------------------------------
-block1_init_legal             2.3304              1.1652              
-block2_timeout_check          0.0015              0.0007              
-block3_all_color_check        0.2479              0.1239              
+block1_init_legal             5.1312              1.2828              
+block2_timeout_check          0.0031              0.0008              
+block3_all_color_check        0.4972              0.1243              
 block4_ensure_color           0.0000              0.0000              
-block5_get_move               0.0045              0.0023              
-block6_corner_before          1.8072              0.9036              
-block7_apply_move             0.8480              0.4240              
-block8_corner_after_calc      1.8079              0.9039              
+block5_get_move               0.0091              0.0023              
+block6_corner_before          3.5632              0.8908              
+block7_apply_move             1.7202              0.4300              
+block8_corner_after_calc      3.5646              0.8912              
 block9_final_check_switch     0.0000              0.0000              
-b9_1_a_any_legal_moves        0.0047              0.0024              
+b9_1_a_any_legal_moves        0.0099              0.0025              
 b9_1_b_compute_left_total     0.0000              0.0000              
 b9_1_c_compute_left_each      0.0000              0.0000              
 b9_1_d_compute_empty_cell     0.0000              0.0000              
-b9_2_switch_color             0.0022              0.0011              
-b9_3_gen_next_legal_moves     37.2493             18.6246             
-b9_4_get_padded_and_mask      9.7424              4.8712              
-b9_5_get_obs_and_misc         3.3666              1.6833              
+b9_2_switch_color             0.0057              0.0014              
+b9_3_gen_next_legal_moves     73.5968             18.3992             
+b9_4_get_padded_and_mask      19.4043             4.8511              
+b9_5_get_obs_and_misc         6.7550              1.6888              

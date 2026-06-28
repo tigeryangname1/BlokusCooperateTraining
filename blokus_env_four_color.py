@@ -95,6 +95,8 @@ class BlokusFourColorEnv(gym.Env):
                 "turn": spaces.Box(
                     low=0, high=3, shape=(1,), dtype=np.int8
                 ),
+                "attachment_maps": spaces.Box(low=0, high=20, shape=(4, 20, 20), dtype=np.float32),
+                "extension_maps": spaces.Box(low=0, high=20, shape=(4, 20, 20), dtype=np.float32),
             }
         )
 
@@ -188,10 +190,10 @@ class BlokusFourColorEnv(gym.Env):
         # 快取當前的對齊動作與遮罩
         self.current_padded_moves, self.current_mask = self._get_padded_moves_and_mask(legal_moves)
         
-        obs = self._get_obs(self.current_mask)
         # 徹底清空戰略特徵圖
         self.attachment_maps.fill(0)
         self.extension_maps.fill(0)
+        obs = self._get_obs(self.current_mask)
 
         info = {}
         return obs, info
@@ -357,8 +359,8 @@ class BlokusFourColorEnv(gym.Env):
         strategic_reward = 0.0
         
         # 權重係數（你可以根據訓練狀況調整這兩個數值）
-        ATTACHMENT_MULTIPLIER = 0.5  # 踩到貼合區（幫隊友防守、鞏固）的加分權重
-        EXTENSION_MULTIPLIER = 0.3   # 踩到延伸區（擋到隊友出路）的扣分權重
+        ATTACHMENT_MULTIPLIER = 0.02  # 踩到貼合區（幫隊友防守、鞏固）的加分權重
+        EXTENSION_MULTIPLIER = 0.01   # 踩到延伸區（擋到隊友出路）的扣分權重
 
         # 遍歷這次落子佔據的所有絕對座標
         for dx, dy in move["shape"]:
@@ -617,7 +619,7 @@ class BlokusFourColorEnv(gym.Env):
         # 3) 最終結算
         # ==========================================
         final_score = base_reward - balance_penalty
-        
+        final_score = final_score * 15 # 給個權重 因為多了 step_reward
         return float(final_score)
     def old_final_reward(self, left_total: int, left_each: dict[int, int]) -> float:
         # 1) 先算 base
