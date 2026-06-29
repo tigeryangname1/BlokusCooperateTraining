@@ -342,6 +342,7 @@ class BlokusFourColorEnv(gym.Env):
         before_corners_count = 0
         for c in all_colors:
             before_corners_count += len(self.state.get_color_corners(c))
+        before_own_corners = len(self.state.get_color_corners(current_color))
         self.time_stats["block6_corner_before"] += (time.perf_counter() - t_start)
         
         # --- [區塊 7: 執行落子 (Apply Move)] ---
@@ -396,15 +397,15 @@ class BlokusFourColorEnv(gym.Env):
         after_corners_count = 0
         for c in all_colors:
             after_corners_count += len(new_state.get_color_corners(c))
-
+        after_own_corners = len(new_state.get_color_corners(current_color))
+        
         space_diff = after_corners_count - before_corners_count
+        own_corner_diff = after_own_corners - before_own_corners
         self.state = new_state
         reward_size = len(move["shape"]) / 5 * 0.01 
-        reward_space = space_diff * 0.02
-        reward_crisis = -0.5 if after_corners_count < 8 else 0.0
+        reward_space = own_corner_diff * 0.02
 
-        step_reward = reward_size + reward_space + reward_crisis
-        step_reward = strategic_reward + reward_size
+        step_reward = strategic_reward + reward_size + reward_space
         self.time_stats["block8_corner_after_calc"] += (time.perf_counter() - t_start)
 
         # --- [區塊 9: 換色、下一手 Mask 與常規返回 (終局函數高度細分版)] ---
