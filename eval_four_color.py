@@ -4,7 +4,9 @@ from blokus import BLUE, YELLOW, RED, GREEN
 from sb3_contrib import MaskablePPO
 from sb3_contrib.common.maskable.utils import get_action_masks
 import numpy as np
+import os
 
+os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'  # 關閉 oneDNN 裝了tensorflow後一直有錯誤訊息，有點煩這邊先關掉
 def run_random_episode(env, max_steps=600, render=True):
     obs, info = env.reset()
     done = False

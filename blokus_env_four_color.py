@@ -347,6 +347,8 @@ class BlokusFourColorEnv(gym.Env):
         
         # --- [區塊 7: 執行落子 (Apply Move)] ---
         t_start = time.perf_counter()
+        # 在 apply_move 之前先存起來
+        old_state = self.state
         new_state = self.state.apply_move(
             current_color,
             move["shape"],
@@ -399,13 +401,26 @@ class BlokusFourColorEnv(gym.Env):
             after_corners_count += len(new_state.get_color_corners(c))
         after_own_corners = len(new_state.get_color_corners(current_color))
         
-        space_diff = after_corners_count - before_corners_count
+        corner_diff = after_corners_count - before_corners_count
         own_corner_diff = after_own_corners - before_own_corners
         self.state = new_state
         reward_size = len(move["shape"]) / 5 * 0.01 
-        reward_space = own_corner_diff * 0.02
+        reward_own_corner = own_corner_diff * 0.005
+        # 檢查角落是否增減時只用在
+        if strategic_reward == 0 :
+            reward_own_corner = 0
 
-        step_reward = strategic_reward + reward_size + reward_space
+        reward_penetration = self.calc_penetration_reward(current_color, move, new_state, old_state) * 0.2
+
+        step_reward = strategic_reward + reward_size + reward_penetration
+
+        # 放在 step_reward 計算之後
+        # print(
+        #     f"step={self.current_steps} | color={current_color} | "
+        #     f"strategic={strategic_reward:.4f} | size={reward_size:.4f} | "
+        #     f"reward_penetration={reward_penetration:.4f} | "
+        #     f"total_step={step_reward:.4f}"
+        # )
         self.time_stats["block8_corner_after_calc"] += (time.perf_counter() - t_start)
 
         # --- [區塊 9: 換色、下一手 Mask 與常規返回 (終局函數高度細分版)] ---
@@ -703,7 +718,47 @@ class BlokusFourColorEnv(gym.Env):
             self.attachment_maps[:, ax, ay] = 0
             self.extension_maps[:, ax, ay] = 0
 
+    def calc_penetration_reward(self, current_color, move, new_state, old_state):
+        """
+        穿越獎勵：
+        條件一：本體對角貼到對手棋子 X
+        條件二：這次落子新增的角落點，相鄰到同一個對手棋子 X
+        """
+        opponent_colors = [c for c in [1, 2, 3, 4] if c != current_color]
 
+        # 收集本體格子對角碰到的對手棋子座標
+        body_opponent_cells = set()
+        for dx, dy in move["shape"]:
+            ax = move["x"] + dx
+            ay = move["y"] + dy
+            for cdx, cdy in [(-1,-1), (-1,1), (1,-1), (1,1)]:
+                nx, ny = ax + cdx, ay + cdy
+                if 0 <= nx < 20 and 0 <= ny < 20:
+                    if new_state.board[ny][nx] in opponent_colors:
+                        body_opponent_cells.add((nx, ny))
+
+        if not body_opponent_cells:
+            return 0.0
+
+        # 只取這次落子新增的角落點
+        old_corners = set(old_state.get_color_corners(current_color))
+        new_corners = set(new_state.get_color_corners(current_color))
+        added_corners = new_corners - old_corners
+
+        if not added_corners:
+            return 0.0
+
+        # 條件二：新角落點相鄰的對手棋子，需要跟本體碰到的是同一個
+        penetration_score = 0.0
+        for (cx, cy) in added_corners:
+            for dx, dy in [(-1,0), (1,0), (0,-1), (0,1)]:
+                nx, ny = cx + dx, cy + dy
+                if 0 <= nx < 20 and 0 <= ny < 20:
+                    if (nx, ny) in body_opponent_cells:  # 同一個 X
+                        penetration_score += 0.03
+                        break  # 同一個角落點不重複計算
+
+        return penetration_score
     def _select_candidate_moves(self, legal_moves: list[dict]) -> list[dict]:
         if len(legal_moves) <= self.max_candidates:
             return legal_moves
