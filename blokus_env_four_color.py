@@ -409,16 +409,18 @@ class BlokusFourColorEnv(gym.Env):
         # 檢查角落是否增減時只用在
         if strategic_reward == 0 :
             reward_own_corner = 0
+        reward_penetration_success   = self.calc_penetration_success_reward(current_color, move, new_state)
 
         reward_penetration = self.calc_penetration_reward(current_color, move, new_state, old_state) * 0.2
+        reward_small_piece           = self.calc_small_piece_penalty(move, self.current_steps)
 
-        step_reward = strategic_reward + reward_size + reward_penetration
+        step_reward = strategic_reward + reward_size + reward_penetration_success + reward_small_piece
 
         # 放在 step_reward 計算之後
         # print(
         #     f"step={self.current_steps} | color={current_color} | "
         #     f"strategic={strategic_reward:.4f} | size={reward_size:.4f} | "
-        #     f"reward_penetration={reward_penetration:.4f} | "
+        #     f"reward_penetration_success={reward_penetration_success:.4f} | "
         #     f"total_step={step_reward:.4f}"
         # )
         self.time_stats["block8_corner_after_calc"] += (time.perf_counter() - t_start)
@@ -759,6 +761,85 @@ class BlokusFourColorEnv(gym.Env):
                         break  # 同一個角落點不重複計算
 
         return penetration_score
+    
+    def calc_penetration_success_reward(self, current_color, move, new_state):
+        """
+        穿越成功獎勵：新落子的某格與周圍形成 2x2 的 O-X 交錯模式
+        四種旋轉方向都算
+        """
+        opponent_colors = [c for c in [1, 2, 3, 4] if c != current_color]
+        board = new_state.board
+
+        def is_own(x, y):
+            if 0 <= x < 20 and 0 <= y < 20:
+                return board[y][x] == current_color
+            return False
+
+        def is_opponent(x, y):
+            if 0 <= x < 20 and 0 <= y < 20:
+                return board[y][x] in opponent_colors
+            return False
+
+        # 四種 2x2 交錯模式，new_cell 是新落子的格子位置
+        # 每個 pattern 是 (自己的相對位置, 對手1的相對位置, 對手2的相對位置)
+        # 以新落子格子為原點
+        patterns = [
+            # O X
+            # X O  ← 新落子在右下
+            ((-1, -1), (0, -1), (-1, 0)),
+            # X O
+            # O X  ← 新落子在左下
+            ((1, -1), (0, -1), (1, 0)),
+            # X O  ← 新落子在右上
+            # O X
+            ((-1, 1), (0, 1), (-1, 0)),
+            # O X  ← 新落子在左上
+            # X O
+            ((1, 1), (0, 1), (1, 0)),
+        ]
+
+        penetration_score = 0.0
+        counted_patterns = set()  # 避免同一個 2x2 重複計算
+
+        for dx, dy in move["shape"]:
+            ax = move["x"] + dx  # 新落子的絕對座標
+            ay = move["y"] + dy
+
+            for own_offset, opp1_offset, opp2_offset in patterns:
+                own_x  = ax + own_offset[0]
+                own_y  = ay + own_offset[1]
+                opp1_x = ax + opp1_offset[0]
+                opp1_y = ay + opp1_offset[1]
+                opp2_x = ax + opp2_offset[0]
+                opp2_y = ay + opp2_offset[1]
+
+                if (is_own(own_x, own_y) and
+                    is_opponent(opp1_x, opp1_y) and
+                    is_opponent(opp2_x, opp2_y)):
+
+                    # 用 2x2 區塊的左上角座標當 key 避免重複
+                    pattern_key = (min(ax, own_x), min(ay, own_y))
+                    if pattern_key not in counted_patterns:
+                        counted_patterns.add(pattern_key)
+                        penetration_score += 0.05
+
+        return penetration_score
+
+    def calc_small_piece_penalty(self, move, current_steps):
+        """
+        前期（20步內）使用小棋子給小懲罰
+        """
+        if current_steps >= 20:
+            return 0.0
+        
+        piece_size = len(move["shape"])
+        if piece_size <= 2:
+            return -0.05
+        elif piece_size == 3:
+            return -0.02
+        else:
+            return 0.0  # 4格以上不懲罰
+        
     def _select_candidate_moves(self, legal_moves: list[dict]) -> list[dict]:
         if len(legal_moves) <= self.max_candidates:
             return legal_moves

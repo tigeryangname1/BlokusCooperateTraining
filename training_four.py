@@ -76,14 +76,14 @@ def main():
         )
     )
 
-    policy_kwargs = dict(
-        features_extractor_class=BlokusCNNExtractor,
-        features_extractor_kwargs=dict(features_dim=256),
-        net_arch=dict(
-            pi=[128, 128],
-            vf=[128, 128],
-        )
-    )
+    # policy_kwargs = dict(
+    #     features_extractor_class=BlokusCNNExtractor,
+    #     features_extractor_kwargs=dict(features_dim=256),
+    #     net_arch=dict(
+    #         pi=[128, 128],
+    #         vf=[128, 128],
+    #     )
+    # )
     '''
     model = MaskablePPO.load("ppo_blokus_four_color_soft", env=env)
     model.learn(total_timesteps=400_000, reset_num_timesteps=False)
@@ -93,7 +93,7 @@ def main():
         "MultiInputPolicy",
         env,
         verbose=1,
-        learning_rate=0.0003,
+        learning_rate=0.003, # 測試訓練改0.003 大概要跑300萬步 
         # learning_rate=1e-3,     # 保持 3e-4，或根據收斂速度微調至 1e-4 # 3e-4覺得太慢 加快一下學習率
         n_steps=4096,           # 每輪收集的樣本數
         batch_size=512,         # 【強烈建議修改】放大 batch size 穩定梯度、加速 GPU 運算
