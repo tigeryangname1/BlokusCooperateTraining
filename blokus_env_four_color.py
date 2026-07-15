@@ -173,7 +173,14 @@ class BlokusFourColorEnv(gym.Env):
         self.penetration_count = 0   # 判斷階段訓練是否發生穿越事件給的reward
         self.pre_penetration_count = 0   # 判斷階段訓練是否發生穿越事件給的reward
         self.early_small_piece_count = 0  # 前20步使用4格以下棋子的次數
-        
+        # key: (my_color, opponent_color), value: 次數
+        self.penetration_count_per_pair = {
+            (1, 2): 0, (1, 3): 0, (1, 4): 0,
+            (2, 1): 0, (2, 3): 0, (2, 4): 0,
+            (3, 1): 0, (3, 2): 0, (3, 4): 0,
+            (4, 1): 0, (4, 2): 0, (4, 3): 0,
+        }
+        self.penetration_pairs_set = set()  # 存 frozenset，只記錄有發生過的配對
 
     # -----------------------
     # Gym API
@@ -206,6 +213,14 @@ class BlokusFourColorEnv(gym.Env):
         self.penetration_count = 0   # 判斷階段訓練是否發生穿越事件給的reward
         self.pre_penetration_count = 0   # 判斷階段訓練是否發生穿越事件給的reward
         self.early_small_piece_count = 0  # 前20步使用4格以下棋子的次數
+        # key: (my_color, opponent_color), value: 次數
+        self.penetration_count_per_pair = {
+            (1, 2): 0, (1, 3): 0, (1, 4): 0,
+            (2, 1): 0, (2, 3): 0, (2, 4): 0,
+            (3, 1): 0, (3, 2): 0, (3, 4): 0,
+            (4, 1): 0, (4, 2): 0, (4, 3): 0,
+        }
+        self.penetration_pairs_set = set()  # 存 frozenset，只記錄有發生過的配對
 
         info = {}
         return obs, info
@@ -424,7 +439,9 @@ class BlokusFourColorEnv(gym.Env):
         if strategic_reward == 0 :
             reward_own_corner = 0
         reward_penetration_success   = self.calc_penetration_success_reward(current_color, move, new_state) # 0.5
-        reward_penetration = self.calc_penetration_reward(current_color, move, new_state, old_state) #0.3
+        reward_penetration, contacted_color = self.calc_penetration_reward(
+            current_color, move, new_state, old_state
+        ) #0.3
 
         reward_small_piece           = self.calc_small_piece_penalty(move, self.current_steps)
 
@@ -437,10 +454,29 @@ class BlokusFourColorEnv(gym.Env):
         ) * 0.1
         self.cached_regions = new_regions
 
-        step_reward = strategic_reward + reward_size + reward_penetration_success + reward_small_piece + reward_space_penalty + reward_penetration
-
+       
         if reward_penetration_success > 0:
             self.penetration_count = self.penetration_count + 1
+
+        new_pair_reward = 0
+        if reward_penetration > 0 and contacted_color is not None:
+            # 階段性首次獎勵
+            pair = frozenset({current_color, contacted_color})
+            first_bonus = self.calc_first_penetration_bonus(pair)
+            if first_bonus > 0:
+                new_pair_reward += first_bonus
+                if self.is_eval:
+                    print(f"🎉 新穿越關係！{current_color}↔{contacted_color} "
+                        f"已有pair數:{sum(1 for c in self.penetration_count_per_pair.values() if c > 0)} "
+                        f"獎勵:{first_bonus}")
+            
+            # 更新 pair 次數
+            self.penetration_count_per_pair[(current_color, contacted_color)] += 1
+            self.penetration_pairs_set.add(pair) 
+
+        step_reward = strategic_reward + reward_size + reward_small_piece + reward_space_penalty + reward_penetration + new_pair_reward
+        # 因紅黃交互不錯 所以 增加新穿越獎勵new_pair_reward 移除穿越成功獎勵reward_penetration_success
+            
         # 放在 step_reward 計算之後
         if self.is_eval:
             print(
@@ -450,6 +486,7 @@ class BlokusFourColorEnv(gym.Env):
                 f"total_step={step_reward:.4f} | "
                 f"space_penalty={reward_space_penalty:.4f} | "
             )
+        
         self.time_stats["block8_corner_after_calc"] += (time.perf_counter() - t_start)
 
         # --- [區塊 9: 換色、下一手 Mask 與常規返回 (終局函數高度細分版)] ---
@@ -646,6 +683,7 @@ class BlokusFourColorEnv(gym.Env):
                 cnt += len(BASE_PIECES[name])
             res[color] = cnt
         return res
+    
     def _final_reward(self, left_total: int, left_each: dict[int, int]) -> float:
         """
         left_total: 所有玩家剩餘的棋子方格總數 (以4人制標準 Blokus 為例，總方格數為 89 * 4 = 356)
@@ -733,6 +771,16 @@ class BlokusFourColorEnv(gym.Env):
         penetration_bonus = self.penetration_count * 0.5
         pre_penetration_bonus = -0.5 if self.pre_penetration_count == 0.0 else self.pre_penetration_count * 0.3
 
+        # 每個顏色有沒有至少一個穿越關係
+        color_has_penetration = {1: False, 2: False, 3: False, 4: False}
+        for pair in self.penetration_pairs_set:
+            for color in pair:
+                color_has_penetration[color] = True
+        
+        no_penetration_penalty = sum(
+            -1.0 for has in color_has_penetration.values() if not has
+        )
+        
         if self.is_eval:
             print(f"=== Space Debug ===")
             print(f"所有區域大小: {sorted(regions, reverse=True)}")
@@ -744,13 +792,16 @@ class BlokusFourColorEnv(gym.Env):
             print(f"pre_penetration_bonus: {pre_penetration_bonus:.4f}")
             print(f"balance_penalty: {balance_penalty * 0.1:.4f}")
             print(f"early_small_penalty: {early_small_penalty:.4f}")
+            print(f"no_penetration_penalty: {no_penetration_penalty:.4f}")
+            print(f"penetration_pairs_set: {self.penetration_pairs_set}", flush=True)
+            print(f"color_has_penetration: {color_has_penetration}", flush=True)
 
         if curriculum_steps <= 20:
             # 階段一：重視角落開放性與均衡
-            return corner_score + small_penalty + balance_penalty + penetration_bonus + early_small_penalty + pre_penetration_bonus
+            return corner_score + small_penalty + balance_penalty + penetration_bonus + early_small_penalty + pre_penetration_bonus + no_penetration_penalty
         else:
             # 階段二：加入空間管理的權重
-            return corner_score + small_penalty * 1.5 + balance_penalty + penetration_bonus + early_small_penalty + pre_penetration_bonus
+            return corner_score + small_penalty * 1.5 + balance_penalty + penetration_bonus + early_small_penalty + pre_penetration_bonus + no_penetration_penalty
         
     def _update_strategic_maps(self, color_idx: int, shape: list[tuple[int, int]], origin_x: int, origin_y: int):
         """
@@ -819,12 +870,17 @@ class BlokusFourColorEnv(gym.Env):
         opponent_colors = [c for c in [1, 2, 3, 4] if c != current_color]
         board = new_state.board
 
-        # 條件一：本體格子上下左右相鄰的對手本體格，記錄 {(x,y): color}
-        body_contact_cells = {}
+        opponent_corner_cells = {}
+        for opp_color in opponent_colors:
+            for (cx, cy) in new_state.get_color_corners(opp_color):
+                opponent_corner_cells[(cx, cy)] = opp_color
+
+        # 條件一：本體上下左右相鄰對手本體，記錄格子與顏色
+        body_contact_cells = {}  # {(x,y): color}
         for dx, dy in move["shape"]:
             ax = move["x"] + dx
             ay = move["y"] + dy
-            for cdx, cdy in [(-1,0), (1,0), (0,-1), (0,1)]:  # 上下左右
+            for cdx, cdy in [(-1,0), (1,0), (0,-1), (0,1)]:
                 nx, ny = ax + cdx, ay + cdy
                 if 0 <= nx < 20 and 0 <= ny < 20:
                     cell = board[ny][nx]
@@ -832,40 +888,41 @@ class BlokusFourColorEnv(gym.Env):
                         body_contact_cells[(nx, ny)] = cell
 
         if not body_contact_cells:
-            return 0.0
+            return 0.0, None
 
-        # 只取這次落子新增的角落點
         old_corners = set(old_state.get_color_corners(current_color))
         new_corners = set(new_state.get_color_corners(current_color))
         added_corners = new_corners - old_corners
 
         if not added_corners:
-            return 0.0
+            return 0.0, None
 
-        # 條件二：新角落點上下左右相鄰，且接觸的是條件一中同一格 X
+        # 條件二：新角落點相鄰同一格對手本體
         penetration_score = 0.0
+        contacted_opponent_color = None
         penetration_events = []
 
         for (cx, cy) in added_corners:
             for dx, dy in [(-1,0), (1,0), (0,-1), (0,1)]:
                 nx, ny = cx + dx, cy + dy
-                if (nx, ny) in body_contact_cells:  # 必須是同一格 X
-                    penetration_score += 0.3
-                    self.pre_penetration_count += 1
+                if (nx, ny) in body_contact_cells:
+                    opp_color = body_contact_cells[(nx, ny)]
+                    penetration_score += 0.03
+                    contacted_opponent_color = opp_color
                     penetration_events.append({
                         "corner": (cx, cy),
                         "contact_cell": (nx, ny),
-                        "color": body_contact_cells[(nx, ny)],
+                        "color": opp_color,
                     })
                     break
 
         if penetration_score > 0 and self.is_eval:
-            print(f"\n=== 穿越發生 ===")
+            print(f"\n=== 穿越潛力發生 ===")
             print(f"顏色: {current_color} | piece: {move['piece']} | "
                 f"x={move['x']} y={move['y']} o_idx={move['o_idx']}")
             for e in penetration_events:
-                print(f"  新角落點 {e['corner']} → 同一格對手 {e['contact_cell']} "
-                    f"(顏色:{e['color']})")
+                print(f"  新角落點 {e['corner']} → 同一格對手 "
+                    f"{e['contact_cell']} (顏色:{e['color']})")
             all_x = [e['corner'][0] for e in penetration_events]
             all_y = [e['corner'][1] for e in penetration_events]
             cx_min = max(0, min(all_x) - 2)
@@ -882,10 +939,10 @@ class BlokusFourColorEnv(gym.Env):
                     else:
                         row += color_map.get(board[y][x], "？")
                 print(f"  {row}")
-            print(f"穿越得分: {penetration_score:.4f}")
+            print(f"穿越潛力得分: {penetration_score:.4f}")
             print(f"================\n")
 
-        return penetration_score
+        return penetration_score, contacted_opponent_color
     
     def calc_penetration_success_reward(self, current_color, move, new_state):
         opponent_colors = [c for c in [1, 2, 3, 4] if c != current_color]
@@ -969,7 +1026,30 @@ class BlokusFourColorEnv(gym.Env):
             print(f"================\n")
 
         return penetration_score
-
+    
+    def calc_no_penetration_penalty(self):
+        penalty = 0.0
+        for color, count in self.penetration_count_per_color.items():
+            if count == 0:
+                penalty -= 0.3  # 每個沒有穿越的顏色扣一次
+        return penalty
+    
+    def calc_first_penetration_bonus(self, pair):
+        # 這個 pair 已發生過
+        if pair in self.penetration_pairs_set:
+            return 0.0
+        
+        existing_pairs = len(self.penetration_pairs_set)
+        
+        if existing_pairs == 0:
+            return 0.3
+        elif existing_pairs == 1:
+            return 1.0
+        elif existing_pairs == 2:
+            return 2.0
+        else:
+            return 0.0
+        
     def calc_small_piece_penalty(self, move, current_steps):
         """
         前期（20步內）使用小棋子給小懲罰
@@ -979,9 +1059,9 @@ class BlokusFourColorEnv(gym.Env):
         
         piece_size = len(move["shape"])
         if piece_size <= 2:
-            return -0.2
+            return -1.0
         elif piece_size == 3:
-            return -0.1
+            return -0.7
         else:
             return 0.0  # 4格以上不懲罰
         
@@ -1062,6 +1142,7 @@ class BlokusFourColorEnv(gym.Env):
                 action_mask[action_id] = True
         
         return self.GLOBAL_CANDIDATE_MOVES, action_mask
+    
     def debug_mask_validation(env, n_steps=10):
         """
         驗證 mask 與 GLOBAL_CANDIDATE_MOVES 的對應是否正確

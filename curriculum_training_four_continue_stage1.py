@@ -32,7 +32,7 @@ def main():
     for param_group in model.policy.optimizer.param_groups:
         param_group['lr'] = 0.0003
     model.ent_coef = 0.03
-    model.learn(total_timesteps=100_000, reset_num_timesteps=False)
+    model.learn(total_timesteps=1000_000, reset_num_timesteps=False)
     '''
     # 1. 建立支援 Mask 的 PPO 模型
     model = MaskablePPO(

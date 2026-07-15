@@ -36,14 +36,14 @@ def main():
         "MultiInputPolicy",
         env,
         verbose=1,
-        learning_rate=0.001, # 測試訓練改0.003 大概要跑300萬步 
+        learning_rate=0.0003, # 測試訓練改0.003 大概要跑300萬步 
         # learning_rate=1e-3,     # 保持 3e-4，或根據收斂速度微調至 1e-4 # 3e-4覺得太慢 加快一下學習率
         n_steps=4096,           # 每輪收集的樣本數
         batch_size=512,         # 【強烈建議修改】放大 batch size 穩定梯度、加速 GPU 運算
         n_epochs=8,            # 每次採樣後重複優化的次數
         gamma=0.99,             # 重視長期回報（非常契合 Blokus 終局結算）
         gae_lambda=0.95,        # 保持穩定的優勢函數估計
-        ent_coef=0.05,          # 【重要】強迫 Agent 探索多元的落子位置與卡位策略，避免過早死鎖 
+        ent_coef=0.03,          # 【重要】強迫 Agent 探索多元的落子位置與卡位策略，避免過早死鎖 
         vf_coef=0.5,            # 價值網路損失權重（配合調整後的 Reward 尺度）
         max_grad_norm=0.5,      # 梯度裁剪，防止權重更新過大導致策略崩塌
         policy_kwargs=policy_kwargs,
